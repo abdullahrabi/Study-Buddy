@@ -1,6 +1,6 @@
-streamlit==1.52.0            # Latest Streamlit release on PyPI Dec 2025:contentReference[oaicite:0]{index=0}
-google-genai>=1.0.0   # Latest google-generativeai on PyPI Dec 16, 2025:contentReference[oaicite:1]{index=1}
-pinecone==8.0.0              # Official Pinecone Python SDK replacing pinecone-client:contentReference[oaicite:2]{index=2}
-PyMuPDF==1.26.7              # Latest PyMuPDF release Dec 11, 2025:contentReference[oaicite:3]{index=3}
-python-dotenv==1.2.1         # Latest python-dotenv release on PyPI (Oct 2025)  
-docx2txt==0.9                # Latest docx2txt release Mar 24, 2025:contentReference[oaicite:4]{index=4}
+streamlit==1.52.0
+google-genai>=1.0.0
+python-dotenv==1.2.1
+pinecone==8.0.0
+PyMuPDF==1.26.7
+docx2txt==0.9
