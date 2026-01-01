@@ -1165,6 +1165,40 @@ img[alt="calendar-icon-class"] {
     width: 40px !important;
     height: 40px !important;
 }
+            
+            /* ============================================
+   BIG QUIZ ICON FIX - FINAL SOLUTION
+   ============================================ */
+
+/* Target ALL images with quiz-icon-class in expanders */
+div[data-testid="stExpander"] img[alt="quiz-icon-class"] {
+    width: 62px !important;
+    height: 62px !important;
+    min-width: 62px !important;
+    min-height: 62px !important;
+    max-width: 62px !important;
+    max-height: 62px !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
+    object-fit: contain !important;
+    transition: all 0.3s ease !important;
+}
+
+
+
+/* Target the specific structure of expander headers */
+div[data-testid="stExpander"] > div:first-child > div:first-child img[alt="quiz-icon-class"],
+div[data-testid="stExpander"]Details img[alt="quiz-icon-class"],
+.stExpander img[alt="quiz-icon-class"] {
+    width: 60px !important;
+    height: 60px !important;
+}
+
+/* Nuclear option - target any image with quiz-icon-class anywhere */
+img[alt="quiz-icon-class"] {
+    width: 60px !important;
+    height: 60px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -2184,10 +2218,10 @@ with tab2:
         col_header1, col_header2 = st.columns([3, 1])
         with col_header1:
             if quiz_icon:
-                  quiz_icon_html = f'![calendar-icon-class](data:image/png;base64,{quiz_icon}) ' 
+                  quiz_icon_html = f'![quiz-icon-class](data:image/png;base64,{quiz_icon}) ' 
             else:
                  quiz_icon_html = "📝"
-        st.subheader(quiz_icon_html + " Take the Quiz")
+        st.subheader(quiz_icon_html + "Take the Quiz")
         with col_header2:
             if st.button("← Back to Setup", type="secondary", use_container_width=True):
                 # Reset quiz state
