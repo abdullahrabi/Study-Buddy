@@ -907,7 +907,11 @@ html, body, [data-testid="stAppViewContainer"] {
         -webkit-text-fill-color: transparent;
         background-clip: text;
     }
-    
+   .metric-card img{
+        height:70px;
+        width:70px,
+        object-fit:contain;
+    }
     .metric-label {
         font-size: 14px;
         color: #9aa3bf;
@@ -966,6 +970,10 @@ html, body, [data-testid="stAppViewContainer"] {
     text-align: center;
     flex-wrap: nowrap;
 }
+.target-icon{
+    width:25px
+    height:25px;
+    }
 
 .custom-loader {
     width: 60px !important;
@@ -1181,9 +1189,9 @@ notes_icon = get_base64_file("notes.png") if os.path.exists("notes.png") else ""
 progress_icon = get_base64_file("progress.png") if os.path.exists("progress.png") else ""
 report_icon = get_base64_file("3d-report.png") if os.path.exists("3d-report.png") else ""
 Calendar_Icon = get_base64_file("Calendar.png") if os.path.exists("Calendar.png") else ""
-
-
-
+target_icon = get_base64_file("target.png") if os.path.exists("target.png") else ""
+book_icon = get_base64_file("book.jpeg") if os.path.exists("book.jpeg") else ""
+quiz_icon = get_base64_file("quiz.jpeg") if os.path.exists("quiz.jpeg") else ""
 # Also update the show_custom_loader function to properly use base64 for GIFs:
 def show_custom_loader(text="Processing..."):
     """Display custom GIF loader using base64 with minimal gap"""
@@ -2172,9 +2180,14 @@ with tab2:
     elif st.session_state.quiz and not st.session_state.completed:
         # STATE 2: Quiz Active - Show Only Quiz
         # Show quiz navigation header with back button
+   
         col_header1, col_header2 = st.columns([3, 1])
         with col_header1:
-            st.subheader("📝 Take the Quiz")
+            if quiz_icon:
+                  quiz_icon_html = f'![calendar-icon-class](data:image/png;base64,{quiz_icon}) ' 
+            else:
+                 quiz_icon_html = "📝"
+        st.subheader(quiz_icon_html + " Take the Quiz")
         with col_header2:
             if st.button("← Back to Setup", type="secondary", use_container_width=True):
                 # Reset quiz state
@@ -2744,9 +2757,13 @@ with tab3:
             with col2:
                 avg_score = summary.get('average_score', 0)
                 scenario = "excellent" if avg_score >= 80 else "good" if avg_score >= 60 else "fair" if avg_score >= 40 else "needs_improvement"
+                if target_icon:
+                    target_icon_html = f'<img src="data:image/png;base64,{target_icon}"'
+                else:
+                    target_icon_html = "🎯 "
                 st.markdown(f"""
                 <div class="metric-card">
-                    <div class="metric-icon">🎯</div>
+                    <div class="metric-icon">{target_icon_html}</div>
                     <div class="metric-label">Average Score</div>
                     <div class="metric-value">{avg_score:.1f}</div>
                     <div style="font-size: 12px; color: #9aa3bf;">Per Quiz</div>
@@ -2774,9 +2791,13 @@ with tab3:
                 topic_count = len(topics)
                 topic_percentage = min(100, (topic_count / 10) * 100) if topics else 0
                 scenario = "excellent" if topic_count >= 8 else "good" if topic_count >= 5 else "fair" if topic_count >= 3 else "needs_improvement"
+                if book_icon:
+                    book_icon_html = f'<img src="data:image/png;base64,{book_icon}" class="book-icon"> '
+                else:
+                    book_icon_html = "📖 "
                 st.markdown(f"""
                 <div class="metric-card">
-                    <div class="metric-icon">📖</div>
+                    <div class="metric-icon">{book_icon_html}</div>
                     <div class="metric-label">Topics Covered</div>
                     <div class="metric-value">{topic_count}</div>
                     <div style="font-size: 12px; color: #9aa3bf;">Areas Studied</div>
