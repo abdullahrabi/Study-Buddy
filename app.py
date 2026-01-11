@@ -1940,57 +1940,44 @@ def get_difficulty_instructions(difficulty, answer_type=None):
 
 # UPDATED FUNCTION: Option buttons with same styling as feedback cards
 def display_option_buttons(question_idx, options, current_selection, answer_type, difficulty):
-    """Display beautiful option buttons with the same styling as feedback cards"""
+    """Simplest working solution for option buttons"""
     
-    # Initialize selected options if not exists
+    # Initialize selected options
     if question_idx not in st.session_state.selected_options:
         st.session_state.selected_options[question_idx] = set(current_selection)
     
-    st.markdown('<div class="option-grid">', unsafe_allow_html=True)
+    # Create buttons in a container
+    container = st.container()
     
-    for option_key, option_text in options.items():
-        is_selected = option_key in st.session_state.selected_options[question_idx]
-        
-        # Create custom button with HTML styling
-        btn_key = f"opt_{question_idx}_{option_key}"
-        
-        # Use a regular button but we'll style it with CSS
-        if st.button(f"{option_key}. {option_text}", 
-                    key=btn_key, 
-                    use_container_width=True):
-            current = st.session_state.selected_options[question_idx]
+    with container:
+        for option_key, option_text in options.items():
+            is_selected = option_key in st.session_state.selected_options[question_idx]
             
-            if difficulty == "Difficult":
-                # Always multi-select for Difficult mode
-                current.symmetric_difference_update({option_key})
-            elif answer_type == "single":
-                # Single answer - replace selection
-                st.session_state.selected_options[question_idx] = {option_key}
-            else:
-                # Multiple answer - toggle selection
-                current.symmetric_difference_update({option_key})
+            # Button styling based on selection
+            button_type = "primary" if is_selected else "secondary"
+            button_label = f"✓ {option_key}. {option_text}" if is_selected else f"{option_key}. {option_text}"
             
-            st.session_state.last_clicked_option = (question_idx, option_key)
-            st.rerun()
-        
-        # Apply selected styling via JavaScript
-        if is_selected:
-            st.markdown(f"""
-            <script>
-            const btn = window.parent.document.querySelector(
-                '[data-testid="stButton"][data-testkey="{btn_key}"] button'
-            );
-            if (btn) {{
-                btn.classList.add('selected');
-                btn.style.background = 'linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15))';
-                btn.style.borderColor = 'rgba(138,123,255,0.6)';
-                btn.style.boxShadow = '0 12px 35px rgba(138,123,255,0.25)';
-                btn.style.position = 'relative';
-            }}
-            </script>
-            """, unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+            # Create the button
+            if st.button(button_label,
+                        key=f"btn_{question_idx}_{option_key}_{is_selected}",  # Include state in key
+                        type=button_type,
+                        use_container_width=True):
+                current = st.session_state.selected_options[question_idx]
+                
+                # Handle selection logic
+                if difficulty == "Difficult" or answer_type == "multiple":
+                    # Toggle selection
+                    if option_key in current:
+                        current.remove(option_key)
+                    else:
+                        current.add(option_key)
+                else:
+                    # Single selection
+                    st.session_state.selected_options[question_idx] = {option_key}
+                
+                st.session_state.last_clicked_option = (question_idx, option_key)
+                st.session_state.need_rerun = True
+                st.rerun()
 
 # -----------------------------
 # HEADER
