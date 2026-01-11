@@ -3,6 +3,7 @@ import os
 import tempfile
 import base64
 import time
+import streamlit.components.v1 as components
 from ai_utils import (
     extract_text_from_pdf,
     extract_text_from_docx,
@@ -595,26 +596,28 @@ html, body, [data-testid="stAppViewContainer"] {
         color: var(--accent2);
     }
     
-    /* Modern Submit Button */
+    /* Modern Submit Button - SMALLER SIZE */
     .modern-submit-btn {
         width: 100%;
-        padding: 18px;
+        padding: 14px !important;  /* Reduced from 18px */
         border-radius: 14px;
         background: linear-gradient(90deg, #8a7bff, #4fded8);
         color: white;
         font-weight: bold;
-        font-size: 17px;
+        font-size: 15px !important;  /* Reduced from 17px */
         border: none;
         cursor: pointer;
         transition: all 0.3s;
-        margin-top: 25px;
+        margin-top: 20px;  /* Reduced from 25px */
         box-shadow: 0 10px 30px rgba(138, 123, 255, 0.3);
         letter-spacing: 0.5px;
+        height: auto !important;
+        min-height: 0 !important;
     }
     
     .modern-submit-btn:hover {
-        transform: translateY(-3px);
-        box-shadow: 0 15px 35px rgba(138, 123, 255, 0.4);
+        transform: translateY(-2px);
+        box-shadow: 0 12px 32px rgba(138, 123, 255, 0.4);
         background: linear-gradient(90deg, #7a6bff, #3fced8);
     }
     
@@ -626,16 +629,16 @@ html, body, [data-testid="stAppViewContainer"] {
         opacity: 0.6;
     }
     
-    /* Modern Navigation Buttons */
+    /* Modern Navigation Buttons - SMALLER SIZE */
     .nav-btn-container {
         display: flex;
-        gap: 12px;
-        margin-top: 20px;
+        gap: 10px;  /* Reduced from 12px */
+        margin-top: 15px;  /* Reduced from 20px */
     }
     
     .nav-btn {
         flex: 1;
-        padding: 14px;
+        padding: 12px !important;  /* Reduced from 14px */
         border-radius: 12px;
         background: rgba(255,255,255,0.05);
         border: 2px solid rgba(255,255,255,0.1);
@@ -644,6 +647,9 @@ html, body, [data-testid="stAppViewContainer"] {
         cursor: pointer;
         transition: all 0.3s;
         text-align: center;
+        font-size: 14px !important;  /* Added font size control */
+        height: auto !important;
+        min-height: 0 !important;
     }
     
     .nav-btn:hover {
@@ -661,7 +667,7 @@ html, body, [data-testid="stAppViewContainer"] {
     
     .nav-btn-primary:hover {
         background: linear-gradient(90deg, #7a6bff, #3fced8);
-        box-shadow: 0 10px 25px rgba(138, 123, 255, 0.3);
+        box-shadow: 0 8px 20px rgba(138, 123, 255, 0.3);  /* Reduced shadow */
     }
 
     /* Quiz progress indicator */
@@ -1199,6 +1205,230 @@ img[alt="quiz-icon-class"] {
     width: 60px !important;
     height: 60px !important;
 }
+               .option-grid {
+            border-radius:12px;
+            padding:20px;
+            background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+            border:1px solid rgba(255,255,255,0.03);
+            box-shadow:0 8px 20px rgba(0,0,0,0.4);
+            margin:10px auto;
+            max-width:900px;
+        }
+
+        /* Button as Card */
+        div[data-testid="stButton"] > button {
+            padding: 20px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+            border: 2px solid rgba(255,255,255,0.08);
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+            user-select: none;
+            min-height: 80px;
+        }
+
+        div[data-testid="stButton"] > button:hover {
+            transform: translateY(-3px);
+            border-color: rgba(79,222,216,0.3);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+        }
+
+        /* Selected Card */
+        div[data-testid="stButton"].selected > button {
+            background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15));
+            border-color: rgba(138,123,255,0.6);
+            box-shadow: 0 12px 35px rgba(138,123,255,0.25);
+        }
+          /* Selected Card After */
+        div[data-testid="stButton"].selected::after > button {
+            content: '✓';
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            width: 28px;
+            height: 28px;
+            background: rgba(138,123,255,0.3);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            font-size: 16px;
+        }
+
+        /* Option Label Circle */
+        .opt-label {
+           padding: 20px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+        border: 2px solid rgba(255,255,255,0.08);
+        cursor: pointer;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        position: relative;
+        overflow: hidden;
+        user-select: none;
+        min-height: 80px;
+        }
+
+        .opt-text {
+            font-size: 16px;
+            line-height: 1.4;
+        }
+
+        .opt-hint {
+            font-size: 12px;
+            color: #555;
+            margin-top: 6px;
+        }
+
+/* ============================================
+   FIX: SMALLER NAVIGATION BUTTONS
+   ============================================ */
+div[data-testid="stButton"] > button[kind="secondary"] {
+    padding: 10px 16px !important;  /* Smaller padding */
+    font-size: 14px !important;     /* Smaller font */
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+div[data-testid="stButton"] > button[kind="primary"] {
+    padding: 10px 16px !important;  /* Smaller padding */
+    font-size: 14px !important;     /* Smaller font */
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* ============================================
+   IMPROVED OPTION BUTTONS - Same as Feedback Cards
+   ============================================ */
+.quiz-option-button {
+    padding: 20px !important;
+    border-radius: 14px !important;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)) !important;
+    border: 2px solid rgba(255,255,255,0.08) !important;
+    cursor: pointer !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
+    overflow: hidden !important;
+    user-select: none !important;
+    min-height: 80px !important;
+    width: 100% !important;
+    margin: 8px 0 !important;
+    text-align: left !important;
+    font-size: 16px !important;
+    line-height: 1.4 !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+}
+
+.quiz-option-button:hover {
+    transform: translateY(-3px) !important;
+    border-color: rgba(79,222,216,0.3) !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4) !important;
+}
+
+.quiz-option-button.selected {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15)) !important;
+    border-color: rgba(138,123,255,0.6) !important;
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25) !important;
+}
+
+.quiz-option-button.selected::after {
+    content: '✓' !important;
+    position: absolute !important;
+    top: 12px !important;
+    right: 12px !important;
+    width: 28px !important;
+    height: 28px !important;
+    background: rgba(138,123,255,0.3) !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-weight: bold !important;
+    color: white !important;
+    font-size: 16px !important;
+}
+
+/* Option button label style */
+.option-btn-content {
+    display: flex !important;
+    align-items: center !important;
+}
+
+.option-btn-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: rgba(138,123,255,0.15);
+    border-radius: 10px;
+    font-weight: bold;
+    margin-right: 15px;
+    color: #8a7bff;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.quiz-option-button.selected .option-btn-label {
+    background: rgba(138,123,255,0.4);
+    color: white;
+    transform: scale(1.1);
+}
+
+/* For buttons inside option-grid */
+.option-grid div[data-testid="stButton"] > button {
+    padding: 20px !important;
+    border-radius: 14px !important;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)) !important;
+    border: 2px solid rgba(255,255,255,0.08) !important;
+    cursor: pointer !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
+    overflow: hidden !important;
+    user-select: none !important;
+    min-height: 80px !important;
+    width: 100% !important;
+    margin: 8px 0 !important;
+    text-align: left !important;
+    font-size: 16px !important;
+    line-height: 1.4 !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button:hover {
+    transform: translateY(-3px) !important;
+    border-color: rgba(79,222,216,0.3) !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button[aria-pressed="true"] {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15)) !important;
+    border-color: rgba(138,123,255,0.6) !important;
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button[aria-pressed="true"]::after {
+    content: '✓' !important;
+    position: absolute !important;
+    top: 12px !important;
+    right: 12px !important;
+    width: 28px !important;
+    height: 28px !important;
+    background: rgba(138,123,255,0.3) !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-weight: bold !important;
+    color: white !important;
+    font-size: 16px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -1708,96 +1938,57 @@ def get_difficulty_instructions(difficulty, answer_type=None):
             """
     return ""
 
-# UPDATED FUNCTION: Direct clickable options using st.button for all modes
-def display_clickable_options(question_idx, options, current_selection, answer_type, difficulty):
-    """Display option cards that can be directly clicked - Simplified version"""
+# UPDATED FUNCTION: Option buttons with same styling as feedback cards
+def display_option_buttons(question_idx, options, current_selection, answer_type, difficulty):
+    """Display beautiful option buttons with the same styling as feedback cards"""
+    
+    # Initialize selected options if not exists
+    if question_idx not in st.session_state.selected_options:
+        st.session_state.selected_options[question_idx] = set(current_selection)
     
     st.markdown('<div class="option-grid">', unsafe_allow_html=True)
     
     for option_key, option_text in options.items():
-        is_selected = option_key in current_selection
-        selected_class = "selected" if is_selected else ""
+        is_selected = option_key in st.session_state.selected_options[question_idx]
         
-        # Create a container with a button that covers the entire card
-        container = st.container()
-        with container:
-            # Display the card
-            card_html = f"""
-            <div class="option-card-interactive {selected_class} option-card-clickable" id="option_{question_idx}_{option_key}">
-                <div style="display: flex; align-items: center;">
-                    <div class="option-label-circle">{option_key}</div>
-                    <div class="option-content">
-                        <div class="option-text">{option_text}</div>
-                        <div class="option-hint">Click to {'deselect' if is_selected else 'select'}</div>
-                    </div>
-                </div>
-            </div>
-            """
-            st.markdown(card_html, unsafe_allow_html=True)
+        # Create custom button with HTML styling
+        btn_key = f"opt_{question_idx}_{option_key}"
+        
+        # Use a regular button but we'll style it with CSS
+        if st.button(f"{option_key}. {option_text}", 
+                    key=btn_key, 
+                    use_container_width=True):
+            current = st.session_state.selected_options[question_idx]
             
-            # Create a transparent button that covers the entire card
-            button_key = f"option_btn_{question_idx}_{option_key}"
-            clicked = st.button(
-                f"Select {option_key}",
-                key=button_key,
-                help=f"Select option {option_key}",
-                type="secondary",
-                # Make button invisible
-                use_container_width=True
-            )
+            if difficulty == "Difficult":
+                # Always multi-select for Difficult mode
+                current.symmetric_difference_update({option_key})
+            elif answer_type == "single":
+                # Single answer - replace selection
+                st.session_state.selected_options[question_idx] = {option_key}
+            else:
+                # Multiple answer - toggle selection
+                current.symmetric_difference_update({option_key})
             
-            if clicked:
-                # Handle the click
-                if question_idx not in st.session_state.selected_options:
-                    st.session_state.selected_options[question_idx] = set()
-                
-                current_selection = st.session_state.selected_options[question_idx]
-                
-                if difficulty == "Difficult":
-                    # Difficult mode - always allow multiple selection
-                    if option_key in current_selection:
-                        current_selection.remove(option_key)
-                    else:
-                        current_selection.add(option_key)
-                elif answer_type == "single":
-                    # Single answer - replace selection
-                    st.session_state.selected_options[question_idx] = {option_key}
-                else:
-                    # Multiple answer - toggle selection
-                    if option_key in current_selection:
-                        current_selection.remove(option_key)
-                    else:
-                        current_selection.add(option_key)
-                
-                st.session_state.last_clicked_option = (question_idx, option_key)
-                st.session_state.need_rerun = True
+            st.session_state.last_clicked_option = (question_idx, option_key)
+            st.rerun()
         
-        # CSS to make the button invisible but cover the card
-        st.markdown(f"""
-        <style>
-        div[data-testid="stVerticalBlock"] > div:has(> div[data-testid="element-container"] > div[data-testid="stButton"] > button[data-testid="stButton"][data-testkey="{button_key}"]) {{
-            position: relative !important;
-            height: 0 !important;
-            margin: 0 !important;
-            padding: 0 !important;
-        }}
-        
-        button[data-testid="stButton"][data-testkey="{button_key}"] {{
-            position: absolute !important;
-            top: 0 !important;
-            left: 0 !important;
-            width: 100% !important;
-            height: 80px !important;
-            opacity: 0 !important;
-            padding: 0 !important;
-            margin: 0 !important;
-            border: none !important;
-            background: transparent !important;
-            cursor: pointer !important;
-            z-index: 20 !important;
-        }}
-        </style>
-        """, unsafe_allow_html=True)
+        # Apply selected styling via JavaScript
+        if is_selected:
+            st.markdown(f"""
+            <script>
+            const btn = window.parent.document.querySelector(
+                '[data-testid="stButton"][data-testkey="{btn_key}"] button'
+            );
+            if (btn) {{
+                btn.classList.add('selected');
+                btn.style.background = 'linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15))';
+                btn.style.borderColor = 'rgba(138,123,255,0.6)';
+                btn.style.boxShadow = '0 12px 35px rgba(138,123,255,0.25)';
+                btn.style.position = 'relative';
+            }}
+            </script>
+            """, unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -2342,14 +2533,14 @@ with tab2:
                     if st.session_state.difficulty == "Difficult" or answer_type == "multiple":
                         st.markdown(f"<div style='margin-bottom: 15px;'><strong>Selected:</strong> <span class='selection-counter'>{len(current_selection)} option(s)</span></div>", unsafe_allow_html=True)
                 
-                # Display directly clickable option cards using the UPDATED function
-                display_clickable_options(idx, options, current_selection, answer_type, st.session_state.difficulty)
+                # Display beautifully styled option buttons (same as feedback cards)
+                display_option_buttons(idx, options, current_selection, answer_type, st.session_state.difficulty)
                 
-                # Submit button
+                # Submit button with smaller size
                 current_selection = st.session_state.selected_options.get(idx, set())
                 submit_disabled = len(current_selection) == 0
                 
-                # Modern submit button
+                # Modern submit button with smaller size
                 submit_col1, submit_col2, submit_col3 = st.columns([1, 2, 1])
                 with submit_col2:
                     submit_label = "✅ Submit Answer & See Result"
@@ -2486,13 +2677,13 @@ with tab2:
                     with st.expander("📖 Explanation", expanded=True):
                         st.info(q['explanation'])
                 
-                # Navigation buttons
+                # Navigation buttons with smaller size
                 st.markdown("<div class='nav-btn-container'>", unsafe_allow_html=True)
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     if idx > 0:
-                        if st.button("← Previous Question", key=f"prev_feedback_{idx}", use_container_width=True):
+                        if st.button("← Previous Question", key=f"prev_feedback_{idx}", use_container_width=True, type="secondary"):
                             st.session_state.current_q -= 1
                             st.session_state.need_rerun = True
                 
