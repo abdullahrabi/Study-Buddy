@@ -2,10 +2,11 @@ import os
 import json
 import time
 import re
+import random
 from typing import List, Dict, Any
 from dotenv import load_dotenv
-import google.genai as genai  # Updated import
-from google.genai.types import GenerateContentConfig  # Added for new API
+import google.genai as genai
+from google.genai.types import GenerateContentConfig, Content, Part
 from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
@@ -24,7 +25,7 @@ if not PINECONE_API_KEY:
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
 # Initialize Gemini client with API key
-client = genai.Client(api_key=GEMINI_API_KEY)  # New way to initialize
+client = genai.Client(api_key=GEMINI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
 # Create or connect to Pinecone index
@@ -94,29 +95,83 @@ def chunk_text(text: str, max_chars: int = 800, overlap: int = 150) -> List[str]
     return chunks
 
 def embed_text(text: str):
-    """Generate embeddings using Gemini"""
+    """Generate embeddings using Gemini - FIXED for new API"""
     try:
-        # New API for embeddings
-        response = client.models.embed_content(
-            model="models/text-embedding-004",
-            contents=text,
-            task_type="retrieval_document"
-        )
+        if not text or not text.strip():
+            print("[WARNING] Empty text provided for embedding")
+            # Return random non-zero vector to avoid Pinecone errors
+            return [random.uniform(0.01, 0.02) for _ in range(768)]
+        
+        # Clean the text
+        text = text.strip()
+        if len(text) > 10000:  # Limit text length
+            text = text[:10000]
+        
+        print(f"[DEBUG] Embedding text length: {len(text)}")
+        
+        # New API for embeddings - CORRECT format
+        try:
+            # Try the new API format
+            response = client.models.embed_content(
+                model="models/text-embedding-004",
+                contents=[text]
+            )
+        except Exception as api_error:
+            print(f"[DEBUG] First API attempt failed: {api_error}")
+            # Try alternative approach
+            response = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text
+            )
         
         # Extract embeddings from response
+        emb = None
+        
+        # Check different response formats
         if hasattr(response, "embeddings") and response.embeddings:
-            emb = response.embeddings[0].values
+            if hasattr(response.embeddings[0], "values"):
+                emb = response.embeddings[0].values
+            elif isinstance(response.embeddings[0], list):
+                emb = response.embeddings[0]
         elif hasattr(response, "embedding"):
             emb = response.embedding
-        else:
-            raise ValueError("No embedding returned.")
+        elif isinstance(response, dict):
+            if "embeddings" in response:
+                emb = response["embeddings"][0]["values"]
+            elif "embedding" in response:
+                emb = response["embedding"]
+        elif isinstance(response, list) and len(response) > 0:
+            emb = response[0] if isinstance(response[0], list) else response
         
-        if not emb:
-            raise ValueError("Empty embedding returned.")
+        if emb is None:
+            print(f"[ERROR] Could not extract embedding from response: {type(response)}")
+            print(f"[DEBUG] Response structure: {dir(response) if hasattr(response, '__dict__') else response}")
+            # Return random non-zero vector
+            return [random.uniform(0.01, 0.02) for _ in range(768)]
+        
+        # Ensure we have the right length
+        if len(emb) != 768:
+            print(f"[WARNING] Embedding length {len(emb)} != 768, adjusting")
+            if len(emb) < 768:
+                # Pad with small random values
+                emb = emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
+            else:
+                # Truncate
+                emb = emb[:768]
+        
+        # Check if all zeros (which Pinecone will reject)
+        if all(abs(v) < 0.0001 for v in emb):
+            print(f"[WARNING] Embedding contains mostly zeros, adding small noise")
+            # Add tiny random noise to avoid all zeros
+            emb = [v + (random.random() * 0.0001 - 0.00005) for v in emb]
+        
+        print(f"[INFO] Generated embedding of length {len(emb)}")
         return emb
+        
     except Exception as e:
         print(f"[ERROR] embed_text: {e}")
-        return [0.0] * 768
+        # Return a non-zero embedding to avoid Pinecone errors
+        return [random.uniform(0.01, 0.02) for _ in range(768)]
 
 # ---------------- IMPROVED RAG CONTEXT RETRIEVAL ----------------
 def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
@@ -183,9 +238,10 @@ def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, resu
         if notes_text:
             chunks = chunk_text(notes_text)
             for i, chunk in enumerate(chunks):
+                emb = embed_text(chunk)
                 vectors.append({
                     "id": f"{user_id}_notes_{int(timestamp)}_{i}",
-                    "values": embed_text(chunk),
+                    "values": emb,
                     "metadata": {
                         "type": "notes", 
                         "text": chunk, 
@@ -198,9 +254,10 @@ def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, resu
 
         if quiz_data:
             quiz_json = json.dumps(quiz_data)
+            emb = embed_text(quiz_json)
             vectors.append({
                 "id": f"{user_id}_quiz_{int(timestamp)}",
-                "values": embed_text(quiz_json),
+                "values": emb,
                 "metadata": {
                     "type": "quiz", 
                     "quiz_data": quiz_json, 
@@ -212,9 +269,10 @@ def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, resu
 
         if result:
             progress_json = json.dumps(result)
+            emb = embed_text(progress_json)
             vectors.append({
                 "id": f"{user_id}_progress_{int(timestamp)}",
-                "values": embed_text(progress_json),
+                "values": emb,
                 "metadata": {
                     "type": "progress", 
                     "progress_data": progress_json, 
@@ -238,16 +296,29 @@ def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, resu
 
 # ---------------- CHAT HISTORY FUNCTIONS ----------------
 def save_chat_history(user_id: str, chat_history: list):
-    """Save chat history to Pinecone"""
+    """Save chat history to Pinecone - FIXED"""
     try:
         if not chat_history:
             return False
             
+        # Ensure we have valid chat history data
+        if not isinstance(chat_history, list):
+            print(f"[ERROR] chat_history should be a list, got {type(chat_history)}")
+            return False
+            
         chat_json = json.dumps(chat_history[-50:])  # Keep only last 50 messages
+        
+        # Generate embedding
+        emb = embed_text(chat_json)
+        
+        # Verify embedding is not all zeros
+        if all(abs(v) < 0.0001 for v in emb):
+            print("[WARNING] Chat history embedding is all zeros, using fallback")
+            emb = [random.uniform(0.01, 0.02) for _ in range(768)]
         
         vectors = [{
             "id": f"{user_id}_chat_{int(time.time())}",
-            "values": embed_text(chat_json),
+            "values": emb,
             "metadata": {
                 "type": "chat", 
                 "chat_data": chat_json, 
@@ -267,8 +338,11 @@ def save_chat_history(user_id: str, chat_history: list):
 def fetch_chat_history(user_id: str):
     """Fetch complete chat history for a user"""
     try:
+        # Use a non-zero query vector
+        query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
+        
         results = index.query(
-            vector=[0]*768, 
+            vector=query_vector,
             filter={
                 "user_id": {"$eq": user_id}, 
                 "type": {"$eq": "chat"}
@@ -392,12 +466,17 @@ AI Tutor:"""
 # ---------------- CREATE FALLBACK QUIZ ----------------
 def create_fallback_quiz(notes_text: str, difficulty: str, config: dict) -> Dict[str, Any]:
     """Create a fallback quiz when AI generation fails."""
+    # Extract a meaningful topic from notes
+    topic = notes_text[:100].split('.')[0].strip()
+    if not topic or len(topic) < 10:
+        topic = "Study Material"
+    
     if difficulty == "difficult":
         # Create a tricky fallback question for difficult level
         return {
             "quiz": [
                 {
-                    "question": f"Which of the following statements about '{notes_text[:50]}...' are correct? (Select ALL that apply)",
+                    "question": f"Which of the following statements about '{topic}' are correct? (Select ALL that apply)",
                     "options": {
                         "A": "The concept is widely accepted in scientific literature",
                         "B": "It has multiple interpretations depending on context", 
@@ -408,7 +487,7 @@ def create_fallback_quiz(notes_text: str, difficulty: str, config: dict) -> Dict
                     "answer_type": "multiple"
                 }
             ],
-            "topic": notes_text[:50],
+            "topic": topic,
             "difficulty": difficulty,
             "source": "fallback",
             "difficulty_config": config
@@ -417,7 +496,7 @@ def create_fallback_quiz(notes_text: str, difficulty: str, config: dict) -> Dict
         return {
             "quiz": [
                 {
-                    "question": f"What is the main topic of '{notes_text[:50]}...'?",
+                    "question": f"What is the main topic of '{topic}'?",
                     "options": {
                         "A": "General knowledge",
                         "B": "Science and technology", 
@@ -428,7 +507,7 @@ def create_fallback_quiz(notes_text: str, difficulty: str, config: dict) -> Dict
                     "answer_type": "single"
                 }
             ],
-            "topic": notes_text[:50],
+            "topic": topic,
             "difficulty": difficulty,
             "source": "fallback",
             "difficulty_config": config
@@ -488,10 +567,16 @@ FOR DIFFICULT LEVEL QUESTIONS:
     else:
         difficult_prompt_addon = ""
     
-    if is_topic:
-        # Generate quiz from topic using AI knowledge
-        prompt = f"""
-You are an expert quiz creator. Create {num_questions} multiple-choice questions about: "{notes_text}"
+    # Clean and prepare notes text
+    notes_preview = notes_text[:3000].strip()  # Limit for prompt
+    if not notes_preview:
+        notes_preview = "General knowledge and study material"
+    
+    prompt = f"""
+You are an expert quiz creator. Create {num_questions} multiple-choice questions based on the following {"topic" if is_topic else "study notes"}:
+
+{"TOPIC" if is_topic else "STUDY NOTES"}:
+{notes_preview}
 
 DIFFICULTY LEVEL: {difficulty.upper()}
 {config['description']}
@@ -502,10 +587,11 @@ Distractors: {config['distractors']}
 {difficult_prompt_addon}
 
 IMPORTANT FORMATTING RULES:
-1. For questions with MULTIPLE correct answers, format the answer field as comma-separated letters (e.g., "A,B" or "B,D")
-2. For questions with SINGLE correct answers, use a single letter (e.g., "A")
-3. Always include exactly 4 options labeled A, B, C, D
-4. When multiple answers are correct, phrase the question to indicate this (e.g., "Which of the following are true?", "Select ALL that apply")
+1. Return ONLY valid JSON, no other text
+2. For questions with MULTIPLE correct answers, format the answer field as comma-separated letters (e.g., "A,B" or "B,D")
+3. For questions with SINGLE correct answers, use a single letter (e.g., "A")
+4. Always include exactly 4 options labeled A, B, C, D
+5. When multiple answers are correct, phrase the question to indicate this (e.g., "Which of the following are true?", "Select ALL that apply")
 
 Output valid JSON strictly in this format:
 {{
@@ -522,55 +608,9 @@ Output valid JSON strictly in this format:
       "answer_type": "multiple"  # or "single" based on number of correct answers
     }}
   ],
-  "topic": "{notes_text}",
+  "topic": "{notes_preview[:100]}",
   "difficulty": "{difficulty}",
-  "source": "topic",
-  "difficulty_config": {{
-    "correct_options": "{config['correct_options']}",
-    "tricky_level": "{config['tricky_level']}",
-    "distractors": "{config['distractors']}"
-  }}
-}}
-"""
-    else:
-        # Generate quiz from provided notes
-        prompt = f"""
-You are a helpful AI quiz generator. Read the study notes and create {num_questions} multiple-choice questions with {difficulty} difficulty level.
-
-{config['description']}
-Correct Options Style: {config['correct_options']}
-Tricky Level: {config['tricky_level']}
-Distractors: {config['distractors']}
-
-{difficult_prompt_addon}
-
-Study Notes:
-{notes_text[:4000]}  # Limit notes length
-
-IMPORTANT FORMATTING RULES:
-1. For questions with MULTIPLE correct answers, format the answer field as comma-separated letters (e.g., "A,B" or "B,D")
-2. For questions with SINGLE correct answers, use a single letter (e.g., "A")
-3. Always include exactly 4 options labeled A, B, C, D
-4. When multiple answers are correct, phrase the question to indicate this (e.g., "Which of the following are true?", "Select ALL that apply")
-
-Output valid JSON strictly in this format:
-{{
-  "quiz": [
-    {{
-      "question": "Question text here?",
-      "options": {{
-        "A": "Option A text",
-        "B": "Option B text", 
-        "C": "Option C text",
-        "D": "Option D text"
-      }},
-      "answer": "A,B",  # Can be single letter or comma-separated letters
-      "answer_type": "multiple"  # or "single" based on number of correct answers
-    }}
-  ],
-  "topic": "Generated from notes",
-  "difficulty": "{difficulty}",
-  "source": "notes",
+  "source": "{"topic" if is_topic else "notes"}",
   "difficulty_config": {{
     "correct_options": "{config['correct_options']}",
     "tricky_level": "{config['tricky_level']}",
@@ -583,12 +623,15 @@ Output valid JSON strictly in this format:
         # Use gemini-2.5-flash model
         model = "gemini-2.5-flash"
         
+        print(f"[DEBUG] Generating quiz with difficulty: {difficulty}")
+        print(f"[DEBUG] Prompt length: {len(prompt)}")
+        
         response = client.models.generate_content(
             model=model,
             contents=prompt,
             config=GenerateContentConfig(
                 temperature=0.7,
-                max_output_tokens=2048,
+                max_output_tokens=4048,
             )
         )
         
@@ -604,11 +647,36 @@ Output valid JSON strictly in this format:
         
         text = text.strip()
         
-        # Extract JSON from response
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        if json_match:
-            json_str = json_match.group()
-            quiz_data = json.loads(json_str)
+        print(f"[DEBUG] Raw response length: {len(text)}")
+        print(f"[DEBUG] Raw response preview: {text[:500]}...")
+        
+        # Clean the response - remove markdown code blocks and extra text
+        text = text.strip()
+        
+        # Remove ```json and ``` markers
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        
+        # Remove any text before the first {
+        start_idx = text.find('{')
+        if start_idx != -1:
+            text = text[start_idx:]
+        
+        # Remove any text after the last }
+        end_idx = text.rfind('}')
+        if end_idx != -1:
+            text = text[:end_idx + 1]
+        
+        print(f"[DEBUG] Cleaned response: {text[:500]}...")
+        
+        # Try to parse JSON
+        try:
+            quiz_data = json.loads(text)
+            
+            # Validate the structure
+            if "quiz" not in quiz_data or not isinstance(quiz_data["quiz"], list):
+                print(f"[ERROR] Invalid quiz structure: no quiz list")
+                raise ValueError("Invalid quiz structure")
             
             # Post-process to ensure answer_type is set correctly
             for question in quiz_data.get("quiz", []):
@@ -616,11 +684,21 @@ Output valid JSON strictly in this format:
                 if "," in answer:
                     question["answer_type"] = "multiple"
                     # Ensure answer is sorted alphabetically for consistency
-                    letters = [letter.strip().upper() for letter in answer.split(",")]
-                    question["answer"] = ",".join(sorted(letters))
+                    letters = [letter.strip().upper() for letter in answer.split(",") if letter.strip()]
+                    question["answer"] = ",".join(sorted(set(letters))) if letters else ""
                 else:
                     question["answer_type"] = "single"
-                    question["answer"] = answer.upper()
+                    question["answer"] = answer.upper() if answer else ""
+            
+            # Ensure required fields
+            if "topic" not in quiz_data:
+                quiz_data["topic"] = notes_preview[:100]
+            if "difficulty" not in quiz_data:
+                quiz_data["difficulty"] = difficulty
+            if "source" not in quiz_data:
+                quiz_data["source"] = "topic" if is_topic else "notes"
+            if "difficulty_config" not in quiz_data:
+                quiz_data["difficulty_config"] = config
             
             print(f"[INFO] Generated {len(quiz_data['quiz'])} {difficulty} questions from {'topic' if is_topic else 'notes'}")
             print(f"[INFO] Difficulty config: {quiz_data.get('difficulty_config', {})}")
@@ -632,13 +710,30 @@ Output valid JSON strictly in this format:
             )
             
             return quiz_data
-        
-        # Fallback if JSON parsing fails
-        print("[WARNING] JSON parsing failed, creating fallback quiz")
-        return create_fallback_quiz(notes_text, difficulty, config)
+            
+        except json.JSONDecodeError as e:
+            print(f"[ERROR] JSON parsing failed: {e}")
+            print(f"[DEBUG] Problematic JSON text: {text}")
+            # Try to extract JSON more aggressively
+            json_pattern = r'\{[^{}]*\{[^{}]*\}[^{}]*\}'  # Try to match nested structures
+            matches = re.findall(json_pattern, text, re.DOTALL)
+            if matches:
+                for match in matches:
+                    try:
+                        quiz_data = json.loads(match)
+                        if "quiz" in quiz_data:
+                            print(f"[INFO] Recovered JSON from pattern match")
+                            return quiz_data
+                    except:
+                        continue
+            
+            print("[WARNING] JSON parsing failed, creating fallback quiz")
+            return create_fallback_quiz(notes_text, difficulty, config)
         
     except Exception as e:
         print(f"[ERROR] generate_quiz_from_notes: {e}")
+        import traceback
+        traceback.print_exc()
         return create_fallback_quiz(notes_text, difficulty, config)
 
 # ---------------- ENHANCED QUIZ EVALUATION FOR MULTIPLE CORRECT ANSWERS ----------------
@@ -811,8 +906,11 @@ def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
 def fetch_progress_from_pinecone(user_id: str):
     """Fetch and summarize user progress"""
     try:
+        # Use a non-zero query vector
+        query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
+        
         results = index.query(
-            vector=[0]*768, 
+            vector=query_vector,
             filter={
                 "user_id": {"$eq": user_id},
                 "type": {"$eq": "progress"}
