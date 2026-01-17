@@ -3,6 +3,7 @@ import json
 import time
 import re
 import random
+from datetime import datetime
 from typing import List, Dict, Any
 from dotenv import load_dotenv
 import google.genai as genai
@@ -11,12 +12,21 @@ from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
 
+# ---------------- TIMEZONE SUPPORT ----------------
+try:
+    import pytz
+    TIMEZONE_AVAILABLE = True
+except ImportError:
+    print("[WARNING] pytz not installed. Install with: pip install pytz")
+    TIMEZONE_AVAILABLE = False
+
 # ---------------- LOAD ENV VARIABLES ----------------
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
+DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
@@ -38,6 +48,93 @@ if INDEX_NAME not in existing:
         spec=ServerlessSpec(cloud="gcp", region=PINECONE_ENVIRONMENT)
     )
 index = pc.Index(INDEX_NAME)
+
+# ---------------- TIMEZONE UTILITIES ----------------
+def get_user_timezone(timezone_str=None):
+    """Get timezone object from string, fallback to default if invalid"""
+    if not TIMEZONE_AVAILABLE:
+        return None
+    
+    try:
+        if timezone_str:
+            return pytz.timezone(timezone_str)
+        else:
+            return pytz.timezone(DEFAULT_TIMEZONE)
+    except pytz.UnknownTimeZoneError:
+        print(f"[WARNING] Unknown timezone: {timezone_str}, using {DEFAULT_TIMEZONE}")
+        return pytz.timezone(DEFAULT_TIMEZONE)
+
+def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d %H:%M:%S"):
+    """Convert UTC timestamp to local timezone string"""
+    if not TIMEZONE_AVAILABLE:
+        # Fallback: convert to datetime without timezone
+        dt = datetime.utcfromtimestamp(timestamp)
+        return dt.strftime(format_str)
+    
+    try:
+        # Convert timestamp to UTC datetime
+        dt_utc = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.UTC)
+        
+        # Convert to user's timezone
+        user_tz = get_user_timezone(timezone_str)
+        dt_local = dt_utc.astimezone(user_tz)
+        
+        return dt_local.strftime(format_str)
+    except Exception as e:
+        print(f"[ERROR] format_timestamp_to_local: {e}")
+        # Fallback to simple conversion
+        dt = datetime.utcfromtimestamp(timestamp)
+        return dt.strftime(format_str)
+
+def get_relative_time(timestamp, timezone_str=None):
+    """Get human-readable relative time (e.g., '2 hours ago')"""
+    now = time.time()
+    diff = now - timestamp
+    
+    if diff < 60:
+        return "just now"
+    elif diff < 3600:
+        minutes = int(diff / 60)
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    elif diff < 86400:
+        hours = int(diff / 3600)
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    elif diff < 604800:
+        days = int(diff / 86400)
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    else:
+        # For older dates, show actual date
+        return format_timestamp_to_local(timestamp, timezone_str, "%b %d, %Y")
+
+def get_common_timezones():
+    """Return list of common timezones for dropdown selection"""
+    if not TIMEZONE_AVAILABLE:
+        return ["UTC"]
+    
+    return [
+        'UTC',
+        'America/New_York',      # Eastern Time
+        'America/Chicago',       # Central Time
+        'America/Denver',        # Mountain Time
+        'America/Los_Angeles',   # Pacific Time
+        'America/Toronto',       # Canada Eastern
+        'America/Vancouver',     # Canada Pacific
+        'Europe/London',         # UK
+        'Europe/Paris',          # Central Europe
+        'Europe/Berlin',         # Germany
+        'Europe/Moscow',         # Russia
+        'Asia/Kolkata',          # India
+        'Asia/Singapore',        # Singapore
+        'Asia/Tokyo',            # Japan
+        'Asia/Shanghai',         # China
+        'Asia/Dubai',            # UAE
+        'Australia/Sydney',      # Australia East
+        'Australia/Perth',       # Australia West
+        'Pacific/Auckland',      # New Zealand
+        'Africa/Johannesburg',   # South Africa
+        'America/Sao_Paulo',     # Brazil
+        'America/Mexico_City',   # Mexico
+    ]
 
 # ---------------- FILE EXTRACTION HELPERS ----------------
 def extract_text_from_pdf(file_path):
@@ -230,56 +327,74 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
         return ""
 
 # ---------------- STORE NOTES, QUIZZES, PROGRESS ----------------
-def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, result=None):
+def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, result=None, user_timezone=None):
     vectors = []
     timestamp = time.time()
     
     try:
+        # Store formatted local time if timezone is provided
+        local_time_info = {}
+        if user_timezone and TIMEZONE_AVAILABLE:
+            local_time_info = {
+                "local_time": format_timestamp_to_local(timestamp, user_timezone),
+                "relative_time": get_relative_time(timestamp, user_timezone),
+                "user_timezone": user_timezone
+            }
+        
         if notes_text:
             chunks = chunk_text(notes_text)
             for i, chunk in enumerate(chunks):
+                metadata = {
+                    "type": "notes", 
+                    "text": chunk, 
+                    "user_id": user_id, 
+                    "chunk_index": i,
+                    "timestamp": timestamp,
+                    "source": "uploaded_notes",
+                    **local_time_info
+                }
+                
                 emb = embed_text(chunk)
                 vectors.append({
                     "id": f"{user_id}_notes_{int(timestamp)}_{i}",
                     "values": emb,
-                    "metadata": {
-                        "type": "notes", 
-                        "text": chunk, 
-                        "user_id": user_id, 
-                        "chunk_index": i,
-                        "timestamp": timestamp,
-                        "source": "uploaded_notes"
-                    }
+                    "metadata": metadata
                 })
 
         if quiz_data:
             quiz_json = json.dumps(quiz_data)
+            metadata = {
+                "type": "quiz", 
+                "quiz_data": quiz_json, 
+                "user_id": user_id,
+                "timestamp": timestamp,
+                "source": "generated_quiz",
+                **local_time_info
+            }
+            
             emb = embed_text(quiz_json)
             vectors.append({
                 "id": f"{user_id}_quiz_{int(timestamp)}",
                 "values": emb,
-                "metadata": {
-                    "type": "quiz", 
-                    "quiz_data": quiz_json, 
-                    "user_id": user_id,
-                    "timestamp": timestamp,
-                    "source": "generated_quiz"
-                }
+                "metadata": metadata
             })
 
         if result:
             progress_json = json.dumps(result)
+            metadata = {
+                "type": "progress", 
+                "progress_data": progress_json, 
+                "user_id": user_id,
+                "timestamp": timestamp,
+                "source": "quiz_result",
+                **local_time_info
+            }
+            
             emb = embed_text(progress_json)
             vectors.append({
                 "id": f"{user_id}_progress_{int(timestamp)}",
                 "values": emb,
-                "metadata": {
-                    "type": "progress", 
-                    "progress_data": progress_json, 
-                    "user_id": user_id,
-                    "timestamp": timestamp,
-                    "source": "quiz_result"
-                }
+                "metadata": metadata
             })
 
         if vectors:
@@ -295,7 +410,7 @@ def store_notes_and_progress(user_id: str, notes_text=None, quiz_data=None, resu
         return False
 
 # ---------------- CHAT HISTORY FUNCTIONS ----------------
-def save_chat_history(user_id: str, chat_history: list):
+def save_chat_history(user_id: str, chat_history: list, user_timezone=None):
     """Save chat history to Pinecone - FIXED"""
     try:
         if not chat_history:
@@ -316,16 +431,26 @@ def save_chat_history(user_id: str, chat_history: list):
             print("[WARNING] Chat history embedding is all zeros, using fallback")
             emb = [random.uniform(0.01, 0.02) for _ in range(768)]
         
+        # Prepare metadata with timezone info
+        metadata = {
+            "type": "chat", 
+            "chat_data": chat_json, 
+            "user_id": user_id,
+            "timestamp": time.time(),
+            "source": "chat_history"
+        }
+        
+        # Add timezone info if available
+        if user_timezone and TIMEZONE_AVAILABLE:
+            metadata.update({
+                "local_time": format_timestamp_to_local(time.time(), user_timezone),
+                "user_timezone": user_timezone
+            })
+        
         vectors = [{
             "id": f"{user_id}_chat_{int(time.time())}",
             "values": emb,
-            "metadata": {
-                "type": "chat", 
-                "chat_data": chat_json, 
-                "user_id": user_id,
-                "timestamp": time.time(),
-                "source": "chat_history"
-            }
+            "metadata": metadata
         }]
         
         index.upsert(vectors=vectors)
@@ -335,7 +460,7 @@ def save_chat_history(user_id: str, chat_history: list):
         print(f"[ERROR] save_chat_history: {e}")
         return False
 
-def fetch_chat_history(user_id: str):
+def fetch_chat_history(user_id: str, user_timezone=None):
     """Fetch complete chat history for a user"""
     try:
         # Use a non-zero query vector
@@ -357,6 +482,13 @@ def fetch_chat_history(user_id: str):
             try:
                 data = json.loads(meta.get("chat_data", "[]"))
                 if isinstance(data, list): 
+                    # Add timezone formatting to chat messages if needed
+                    for chat in data:
+                        if isinstance(chat, dict) and 'timestamp' in chat:
+                            chat['local_time'] = format_timestamp_to_local(
+                                chat['timestamp'], 
+                                user_timezone or meta.get('user_timezone')
+                            )
                     chat_history.extend(data)
             except Exception as e:
                 print(f"Error parsing chat data: {e}")
@@ -515,7 +647,8 @@ def create_fallback_quiz(notes_text: str, difficulty: str, config: dict) -> Dict
 
 # ---------------- ENHANCED QUIZ GENERATION WITH TRICKY MULTIPLE CHOICE ----------------
 def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user", 
-                           num_questions: int = 5, difficulty: str = "medium") -> Dict[str, Any]:
+                           num_questions: int = 5, difficulty: str = "medium",
+                           user_timezone: str = None) -> Dict[str, Any]:
     """Generate quiz from notes OR topic with enhanced difficulty levels."""
     
     # If notes_text is short, treat it as a topic
@@ -703,10 +836,11 @@ Output valid JSON strictly in this format:
             print(f"[INFO] Generated {len(quiz_data['quiz'])} {difficulty} questions from {'topic' if is_topic else 'notes'}")
             print(f"[INFO] Difficulty config: {quiz_data.get('difficulty_config', {})}")
             
-            # Store in vector database
+            # Store in vector database with timezone info
             store_notes_and_progress(
                 user_id=user_id,
-                quiz_data=quiz_data
+                quiz_data=quiz_data,
+                user_timezone=user_timezone
             )
             
             return quiz_data
@@ -737,7 +871,7 @@ Output valid JSON strictly in this format:
         return create_fallback_quiz(notes_text, difficulty, config)
 
 # ---------------- ENHANCED QUIZ EVALUATION FOR MULTIPLE CORRECT ANSWERS ----------------
-def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None):
+def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezone=None):
     """Evaluate quiz attempt with support for multiple correct answers"""
     correct = 0
     total = len(quiz_json.get("quiz", []))
@@ -869,7 +1003,7 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None):
     }
     
     if user_id: 
-        store_notes_and_progress(user_id, result=progress_data)
+        store_notes_and_progress(user_id, result=progress_data, user_timezone=user_timezone)
     
     return progress_data
 
@@ -903,8 +1037,8 @@ def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
     return "\n".join(output)
 
 # ---------------- FETCH USER PROGRESS ----------------
-def fetch_progress_from_pinecone(user_id: str):
-    """Fetch and summarize user progress"""
+def fetch_progress_from_pinecone(user_id: str, user_timezone=None):
+    """Fetch and summarize user progress with timezone support"""
     try:
         # Use a non-zero query vector
         query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
@@ -925,6 +1059,16 @@ def fetch_progress_from_pinecone(user_id: str):
             try: 
                 data = json.loads(meta.get("progress_data", "{}"))
                 if data and isinstance(data, dict):
+                    # Add formatted local time using stored or current timezone
+                    timestamp = data.get('timestamp', 0)
+                    if timestamp:
+                        # Use stored timezone if available, otherwise use current
+                        stored_timezone = meta.get('user_timezone', user_timezone)
+                        data['local_time'] = format_timestamp_to_local(timestamp, stored_timezone)
+                        data['date'] = format_timestamp_to_local(timestamp, stored_timezone, "%Y-%m-%d")
+                        data['time'] = format_timestamp_to_local(timestamp, stored_timezone, "%H:%M:%S")
+                        data['relative_time'] = get_relative_time(timestamp, stored_timezone)
+                    
                     progress_list.append(data)
             except Exception as e:
                 print(f"Error parsing progress data: {e}")
@@ -941,7 +1085,8 @@ def fetch_progress_from_pinecone(user_id: str):
                     "total_attempts": 0, 
                     "average_score": 0, 
                     "average_accuracy": 0,
-                    "topics_covered": []
+                    "topics_covered": [],
+                    "user_timezone": user_timezone or DEFAULT_TIMEZONE
                 }
             }
         
@@ -957,11 +1102,17 @@ def fetch_progress_from_pinecone(user_id: str):
             if topic:
                 topics.add(topic)
         
+        # Get recent activity (last 7 days)
+        one_week_ago = time.time() - (7 * 24 * 3600)
+        recent_activity = [p for p in progress_list if p.get('timestamp', 0) > one_week_ago]
+        
         summary = {
             "total_attempts": total_attempts,
             "average_score": round(average_score, 2),
             "average_accuracy": round(average_accuracy, 2),
-            "topics_covered": list(topics)[:10]  # Limit to 10 topics
+            "topics_covered": list(topics)[:10],  # Limit to 10 topics
+            "recent_activity": len(recent_activity),
+            "user_timezone": user_timezone or DEFAULT_TIMEZONE
         }
         
         return {
@@ -979,6 +1130,25 @@ def fetch_progress_from_pinecone(user_id: str):
                 "total_attempts": 0, 
                 "average_score": 0, 
                 "average_accuracy": 0,
-                "topics_covered": []
+                "topics_covered": [],
+                "recent_activity": 0,
+                "user_timezone": user_timezone or DEFAULT_TIMEZONE
             }
         }
+
+# ---------------- GET CURRENT TIME IN USER TIMEZONE ----------------
+def get_current_time_in_timezone(timezone_str=None):
+    """Get current time formatted in user's timezone"""
+    current_time = time.time()
+    return format_timestamp_to_local(current_time, timezone_str)
+
+# ---------------- HELPER: FORMAT TIMESTAMP FOR DISPLAY ----------------
+def format_timestamp_for_display(timestamp, user_timezone=None):
+    """Format timestamp for nice display in UI"""
+    if not timestamp:
+        return "N/A"
+    
+    local_time = format_timestamp_to_local(timestamp, user_timezone)
+    relative_time = get_relative_time(timestamp, user_timezone)
+    
+    return f"{local_time} ({relative_time})"
