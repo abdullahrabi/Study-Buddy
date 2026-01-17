@@ -4,7 +4,8 @@ import time
 import re
 from typing import List, Dict, Any
 from dotenv import load_dotenv
-import google.generativeai as genai
+import google.genai as genai  # Updated import
+from google.genai.types import GenerateContentConfig  # Added for new API
 from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
@@ -22,7 +23,8 @@ if not PINECONE_API_KEY:
     raise ValueError("❌ PINECONE_API_KEY not found!")
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
-genai.configure(api_key=GEMINI_API_KEY)
+# Initialize Gemini client with API key
+client = genai.Client(api_key=GEMINI_API_KEY)  # New way to initialize
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
 # Create or connect to Pinecone index
@@ -94,14 +96,23 @@ def chunk_text(text: str, max_chars: int = 800, overlap: int = 150) -> List[str]
 def embed_text(text: str):
     """Generate embeddings using Gemini"""
     try:
-        result = genai.embed_content(
+        # New API for embeddings
+        response = client.models.embed_content(
             model="models/text-embedding-004",
-            content=text,
+            contents=text,
             task_type="retrieval_document"
         )
-        emb = result.get("embedding") if isinstance(result, dict) else getattr(result, "embedding", None)
-        if not emb:
+        
+        # Extract embeddings from response
+        if hasattr(response, "embeddings") and response.embeddings:
+            emb = response.embeddings[0].values
+        elif hasattr(response, "embedding"):
+            emb = response.embedding
+        else:
             raise ValueError("No embedding returned.")
+        
+        if not emb:
+            raise ValueError("Empty embedding returned.")
         return emb
     except Exception as e:
         print(f"[ERROR] embed_text: {e}")
@@ -297,8 +308,6 @@ def fetch_chat_history(user_id: str):
 def get_gemini_response(user_input: str, history: list = None, user_id: str = None):
     """Chatbot with PROPER streaming response - FIXED VERSION"""
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        
         # Check if it's a casual greeting
         casual_phrases = ["hi", "hello", "hey", "good morning", "good evening", "how are you"]
         is_casual = any(p in user_input.lower() for p in casual_phrases)
@@ -348,13 +357,30 @@ Provide a helpful, engaging response. If asking about study topics, offer to hel
 
 AI Tutor:"""
         
-        # Generate streaming response
-        response = model.generate_content(prompt, stream=True)
+        # Generate streaming response using new API
+        # Using gemini-2.5-flash as it's widely available
+        model = "gemini-2.5-flash"
         
-        # This is the key fix - yield chunks for proper streaming
-        for chunk in response:
-            if chunk.text:
+        # Generate with streaming
+        stream = client.models.generate_content_stream(
+            model=model,
+            contents=prompt,
+            config=GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
+            )
+        )
+        
+        # Yield chunks for proper streaming
+        for chunk in stream:
+            if hasattr(chunk, "text") and chunk.text:
                 yield chunk.text
+            elif hasattr(chunk, "candidates") and chunk.candidates:
+                for candidate in chunk.candidates:
+                    if hasattr(candidate, "content") and candidate.content:
+                        for part in candidate.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                yield part.text
                 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
@@ -554,9 +580,29 @@ Output valid JSON strictly in this format:
 """
     
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        text = (response.text or "").strip()
+        # Use gemini-2.5-flash model
+        model = "gemini-2.5-flash"
+        
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=2048,
+            )
+        )
+        
+        text = ""
+        if hasattr(response, "text"):
+            text = response.text or ""
+        elif hasattr(response, "candidates") and response.candidates:
+            for candidate in response.candidates:
+                if hasattr(candidate, "content") and candidate.content:
+                    for part in candidate.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            text += part.text
+        
+        text = text.strip()
         
         # Extract JSON from response
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
