@@ -1,0 +1,1408 @@
+/* styles.css - Complete CSS for StudyBuddy */
+
+/* Sidebar background */
+
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #061022, #0b1523) !important;
+    color: #e6eef9 !important;
+}
+
+/* Sidebar text and headings */
+section[data-testid="stSidebar"] * {
+    color: #e6eef9 !important;
+}
+
+:root{
+    --bg-1: #061022;
+    --bg-2: #0b1523;
+    --card: rgba(255,255,255,0.03);
+    --glass: rgba(255,255,255,0.04);
+    --accent1: #4fded8;
+    --accent2: #8a7bff;
+    --accent3: #ff6b9d;
+    --accent4: #00d9ff;
+    --accent5: #ffd166;
+    --muted: #9aa3bf;
+    --text: #e6eef9;
+}
+
+/* ============================================
+   CLEAN PROFESSIONAL TABS - COMPLETE VERSION
+   ============================================ */
+
+/* 1. SUBTLE TAB CONTAINER */
+.stTabs {
+    background: transparent !important;
+    backdrop-filter: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    margin: 15px 0 25px 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+/* 2. CLEAN TAB LIST */
+.stTabs [data-baseweb="tab-list"] {
+    display: flex !important;
+    gap: 2px !important;
+    width: 100% !important;
+    justify-content: flex-start !important;
+    background: rgba(255, 255, 255, 0.03) !important;
+    border-radius: 12px !important;
+    padding: 4px !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 3. MINIMAL INDIVIDUAL TAB */
+.stTabs [data-baseweb="tab"] {
+    flex: 1 !important;
+    text-align: center !important;
+    padding: 10px 10px !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    border-radius: 10px !important;
+    border: 1px solid transparent !important;
+    color: #9aa3bf !important;
+    font-weight: 600 !important;
+    font-size: 26px !important; 
+    transition: all 0.25s ease !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    min-height: 50px !important; /* Increased for big icons */
+    cursor: pointer !important;
+    line-height: 1.2 !important; /* Better text spacing */
+}
+
+/* NUCLEAR FONT SIZE OVERRIDE - Added to fix 14px issue */
+.stTabs [data-baseweb="tab"] *,
+.stTabs [data-baseweb="tab"] > div > div,
+.stTabs [data-baseweb="tab"] > div > div > div,
+.stTabs [data-baseweb="tab"] span:not([role="img"]) {
+    font-size: 26px !important !important; /* Double !important */
+    font-weight: 600 !important;
+    color: inherit !important;
+}
+
+/* Override any inline font-size from Streamlit */
+.stTabs [data-baseweb="tab"][style*="font-size"],
+.stTabs [data-baseweb="tab"] *[style*="font-size"] {
+    font-size: 26px !important !important !important; /* Triple !important */
+}
+
+/* 4. SUBTLE HOVER */
+.stTabs [data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+    background: rgba(255, 255, 255, 0.05) !important;
+    color: #d6e0f5 !important;
+}
+
+/* 5. ACTIVE TAB (Clean Blue Selection) */
+.stTabs [data-baseweb="tab"][aria-selected="true"] {
+    background: rgba(79, 222, 216, 0.15) !important;
+    border: 1px solid rgba(79, 222, 216, 0.25) !important;
+    color: white !important;
+    font-weight: 600 !important;
+    font-size: 26px !important !important; /* Double !important */
+}
+
+/* Active tab text override */
+.stTabs [data-baseweb="tab"][aria-selected="true"] *,
+.stTabs [data-baseweb="tab"][aria-selected="true"] > div > div {
+    font-size: 26px !important !important;
+    color: white !important;
+}
+
+/* 6. REMOVE ALL GLOW/ANIMATION EFFECTS */
+.stTabs [data-baseweb="tab"][aria-selected="true"]::before,
+.stTabs [data-baseweb="tab"][aria-selected="true"]::after {
+    display: none !important;
+}
+
+/* 7. BIG ICONS - Increased size */
+.stTabs [data-baseweb="tab"] img {
+    width: 26px !important; /* Increased from 32px */
+    height: 26px !important; /* Increased from 32px */
+    min-width: 26px !important;
+    min-height: 26px !important;
+    object-fit: contain !important;
+    margin: 0.2rem !important;
+    transition: all 0.25s ease !important;
+}
+
+/* Override Streamlit's inline icon sizing */
+.stTabs [data-baseweb="tab"] img[style*="width"],
+.stTabs [data-baseweb="tab"] img[style*="height"] {
+    width: 28px !important !important;
+    height: 28px !important !important;
+}
+
+/* 8. ACTIVE ICON (Subtle Change) */
+.stTabs [data-baseweb="tab"][aria-selected="true"] img {
+    border-color: rgba(79, 222, 216, 0.3) !important;
+    transform: scale(1.05) !important;
+}
+
+/* 9. EMOJI FALLBACK - Bigger to match icons */
+.stTabs [data-baseweb="tab"] span[role="img"] {
+    font-size: 32px !important; /* Increased */
+    opacity: 0.9 !important;
+}
+
+.stTabs [data-baseweb="tab"][aria-selected="true"] span[role="img"] {
+    opacity: 1 !important;
+    transform: scale(1.05) !important;
+}
+
+/* 10. REMOVE DEFAULT HIGHLIGHT */
+.stTabs [data-baseweb="tab-highlight"] {
+    display: none !important;
+}
+
+/* 11. TAB CONTENT AREA - Fixed typo */
+div[data-baseweb="tab-panel"] {
+    padding: 40px 0 10px 0 !important; /* Fixed: was "40px 10 10px 0" */
+}
+
+/* 12. FOCUS STATES FOR ACCESSIBILITY */
+.stTabs [data-baseweb="tab"]:focus-visible {
+    outline: 2px solid rgba(79, 222, 216, 0.4) !important;
+    outline-offset: 2px !important;
+}
+
+/* 13. EXTRA OVERRIDE FOR STUBBORN STREAMLIT STYLES */
+div[data-testid="stTabs"] [data-baseweb="tab"],
+div[data-testid="stTabs"] [data-baseweb="tab"] * {
+    font-size: 18px !important;
+}
+
+
+html, body, [data-testid="stAppViewContainer"] {
+    background: linear-gradient(180deg, var(--bg-1), var(--bg-2)) !important;
+    color: var(--text) !important;
+    font-family: "Segoe UI", Inter, Roboto, -apple-system, Arial !important;
+}
+
+div[data-testid="stVerticalBlock"] {
+    margin:0 !important;
+    padding:0 !important;
+}
+
+.header-card {
+    max-width:1100px;
+    margin:0 auto 12px auto;
+    padding:28px 28px 20px;
+    border-radius:18px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    box-shadow:0 8px 30px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.02);
+    border:1px solid rgba(255,255,255,0.04);
+    backdrop-filter:blur(8px)saturate(120%);
+}
+
+.header-inner {
+    display:flex;
+    gap:20px;
+    align-items:center;
+    justify-content:center;
+}
+
+.header-avatar img{
+    width:90px;
+    border-radius:8px;
+}
+
+.chat-box {
+    border-radius:12px;
+    padding:20px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    border:1px solid rgba(255,255,255,0.03);
+    box-shadow:0 8px 20px rgba(0,0,0,0.4);
+    margin:10px auto;
+    max-width:900px;
+}
+
+.quiz-box {
+    border-radius:12px;
+    padding:20px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    border:1px solid rgba(255,255,255,0.03);
+    box-shadow:0 8px 20px rgba(0,0,0,0.4);
+    margin:10px auto;
+    max-width:900px;
+}
+
+.avatar-img{
+    width:200px;
+    height:200px;
+    display:block;
+    margin:auto;
+    border-radius:14px;
+}
+
+.msg-bubble {
+    display:inline-block;
+    padding:14px 16px;
+    border-radius:14px;
+    max-width:80%;
+    font-size:15px;
+    line-height:1.35;
+    border:1px solid rgba(255,255,255,0.03);
+    backdrop-filter:blur(6px)saturate(120%);
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    box-shadow:0 8px 24px rgba(0,0,0,0.55);
+}
+
+.msg-user {
+    margin-left:auto;
+    background:linear-gradient(90deg,rgba(79,222,216,0.06),rgba(137,80,255,0.06));
+    border:1px solid rgba(79,222,216,0.18);
+}
+
+.msg-bot {
+    margin-right:auto;
+    background:linear-gradient(90deg,rgba(137,80,255,0.03),rgba(79,222,216,0.02));
+    border:1px solid rgba(137,80,255,0.08);
+}
+
+.msg-time {
+    display:block;
+    font-size:11px;
+    color:var(--muted);
+    margin-top:6px;
+}
+
+.input-wrap {
+    display:flex;
+    align-items:center;
+    padding:12px;
+    border-radius:12px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    border:1px solid rgba(255,255,255,0.03);
+    position:relative;
+}
+
+.chat-input {
+    flex:1;
+    border:none;
+    background:transparent;
+    padding:12px 16px 12px 16px;
+    padding-right:60px;
+    font-size:15px;
+    color:var(--text);
+}
+
+.chat-input:focus { outline:none; }
+
+.send-btn {
+    padding:10px 20px;
+    border-radius:10px;
+    border:none;
+    cursor:pointer;
+    background:linear-gradient(90deg,#2563eb,#3b82f6);
+    color:white;
+    font-weight:700;
+    box-shadow:0 8px 24px rgba(37,99,235,0.25);
+    position:absolute;
+    right:12px;
+    top:50%;
+    transform:translateY(-50%);
+    transition:0.2s ease;
+}
+
+.send-btn:hover {
+    box-shadow:0 8px 24px rgba(37,99,235,0.35);
+    transform:translateY(-50%)scale(1.02);
+}
+
+/* Interactive Option Cards - Direct Click Selection */
+.option-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin: 25px 0;
+}
+
+.option-card-interactive {
+    padding: 20px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 2px solid rgba(255,255,255,0.08);
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    user-select: none;
+    min-height: 80px;
+}
+
+.option-card-interactive:hover {
+    transform: translateY(-3px);
+    border-color: rgba(79,222,216,0.3);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+}
+
+.option-card-interactive.selected {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15));
+    border-color: rgba(138,123,255,0.6);
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25);
+}
+
+.option-card-interactive.selected::after {
+    content: '✓';
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    background: rgba(138,123,255,0.3);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: white;
+    font-size: 16px;
+}
+
+.option-card-interactive.correct {
+    background: linear-gradient(135deg, rgba(79,222,216,0.15), rgba(0,217,255,0.08)) !important;
+    border-color: rgba(79,222,216,0.5) !important;
+    border-left: 4px solid #4fded8 !important;
+}
+
+.option-card-interactive.wrong {
+    background: linear-gradient(135deg, rgba(255,107,157,0.15), rgba(255,142,107,0.08)) !important;
+    border-color: rgba(255,107,157,0.5) !important;
+    border-left: 4px solid #ff6b9d !important;
+}
+
+.option-card-interactive.partial {
+    background: linear-gradient(135deg, rgba(255,193,7,0.2), rgba(255,165,0,0.15));
+    border-color: rgba(255,193,7,0.6);
+    border-left: 4px solid #ffd166 !important;
+}
+
+.option-label-circle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: rgba(138,123,255,0.15);
+    border-radius: 10px;
+    font-weight: bold;
+    margin-right: 15px;
+    color: #8a7bff;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.option-card-interactive.selected .option-label-circle {
+    background: rgba(138,123,255,0.4);
+    color: white;
+    transform: scale(1.1);
+}
+
+.option-card-interactive.correct .option-label-circle {
+    background: rgba(79,222,216,0.3) !important;
+    color: white !important;
+    border: 2px solid rgba(79,222,216,0.6) !important;
+}
+
+.option-card-interactive.wrong .option-label-circle {
+    background: rgba(255,107,157,0.3) !important;
+    color: white !important;
+    border: 2px solid rgba(255,107,157,0.6) !important;
+}
+
+.option-card-interactive.partial .option-label-circle {
+    background: rgba(255,209,102,0.3) !important;
+    color: white !important;
+    border: 2px solid rgba(255,193,7,0.6) !important;
+}
+
+.option-card-interactive .option-label-circle {
+    transition: all 0.3s ease !important;
+    font-weight: bold !important;
+}
+
+.option-content {
+    flex: 1;
+}
+
+.option-text {
+    font-size: 15px;
+    line-height: 1.4;
+    font-weight: 500;
+}
+
+.option-hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+    font-style: italic;
+}
+
+/* Single vs Multiple mode indicators */
+.mode-indicator {
+    display: inline-block;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    margin-left: 10px;
+}
+
+.single-mode {
+    background: rgba(79,222,216,0.2);
+    color: #4fded8;
+}
+
+.multi-mode {
+    background: rgba(138,123,255,0.2);
+    color: #8a7bff;
+}
+
+/* Difficulty-specific styles */
+.difficulty-badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    margin-right: 8px;
+}
+
+.difficulty-easy {
+    background: rgba(79,222,216,0.2);
+    color: #4fded8;
+}
+
+.difficulty-medium {
+    background: rgba(138,123,255,0.2);
+    color: #8a7bff;
+}
+
+.difficulty-hard {
+    background: rgba(255,107,157,0.2);
+    color: #ff6b9d;
+}
+
+.difficulty-difficult {
+    background: rgba(255,65,108,0.2);
+    color: #ff416c;
+}
+
+.difficult-warning-box {
+    background: linear-gradient(135deg, rgba(255,107,157,0.1), rgba(255,65,108,0.05));
+    border-left: 4px solid #ff6b9d;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 15px 0;
+}
+
+.single-mode-box {
+    background: linear-gradient(135deg, rgba(79,222,216,0.1), rgba(0,217,255,0.05));
+    border-left: 4px solid #4fded8;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 15px 0;
+}
+
+.multi-mode-box {
+    background: linear-gradient(135deg, rgba(138,123,255,0.1), rgba(179,102,255,0.05));
+    border-left: 4px solid #8a7bff;
+    padding: 15px;
+    border-radius: 10px;
+    margin: 15px 0;
+}
+
+/* Enhanced Progress Bars */
+.progress-container {
+    width: 100%;
+    height: 12px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 10px;
+    margin: 15px 0;
+    overflow: hidden;
+    position: relative;
+}
+
+.progress-bar-gradient {
+    height: 100%;
+    border-radius: 10px;
+    background: linear-gradient(90deg, 
+        #4fded8 0%, 
+        #8a7bff 50%, 
+        #ff6b9d 100%);
+    position: relative;
+    transition: width 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 0 20px rgba(79, 222, 216, 0.3);
+}
+
+.progress-bar-gradient::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255,255,255,0.2), 
+        transparent);
+    animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.progress-label {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 5px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.progress-percentage {
+    font-weight: bold;
+    color: var(--accent2);
+}
+
+/* Modern Submit Button - SMALLER SIZE */
+.modern-submit-btn {
+    width: 100%;
+    padding: 14px !important;  /* Reduced from 18px */
+    border-radius: 14px;
+    background: linear-gradient(90deg, #8a7bff, #4fded8);
+    color: white;
+    font-weight: bold;
+    font-size: 15px !important;  /* Reduced from 17px */
+    border: none;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin-top: 20px;  /* Reduced from 25px */
+    box-shadow: 0 10px 30px rgba(138, 123, 255, 0.3);
+    letter-spacing: 0.5px;
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+.modern-submit-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(138, 123, 255, 0.4);
+    background: linear-gradient(90deg, #7a6bff, #3fced8);
+}
+
+.modern-submit-btn:disabled {
+    background: linear-gradient(90deg, #9aa3bf, #8a93af);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+    opacity: 0.6;
+}
+
+/* Modern Navigation Buttons - SMALLER SIZE */
+.nav-btn-container {
+    display: flex;
+    gap: 10px;  /* Reduced from 12px */
+    margin-top: 15px;  /* Reduced from 20px */
+}
+
+.nav-btn {
+    flex: 1;
+    padding: 12px !important;  /* Reduced from 14px */
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    border: 2px solid rgba(255,255,255,0.1);
+    color: var(--text);
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+    text-align: center;
+    font-size: 14px !important;  /* Added font size control */
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+.nav-btn:hover {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(79,222,216,0.4);
+    transform: translateY(-2px);
+}
+
+.nav-btn-primary {
+    background: linear-gradient(90deg, #8a7bff, #4fded8);
+    border: none;
+    color: white;
+    font-weight: bold;
+}
+
+.nav-btn-primary:hover {
+    background: linear-gradient(90deg, #7a6bff, #3fced8);
+    box-shadow: 0 8px 20px rgba(138, 123, 255, 0.3);  /* Reduced shadow */
+}
+
+/* Quiz progress indicator */
+.quiz-progress-container {
+    background: rgba(255,255,255,0.03);
+    border-radius: 12px;
+    padding: 15px;
+    margin: 15px 0;
+    border: 1px solid rgba(255,255,255,0.05);
+}
+
+.quiz-progress-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.quiz-progress-stats {
+    display: flex;
+    gap: 15px;
+    font-size: 14px;
+}
+
+.quiz-progress-stat {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.quiz-progress-dots {
+    display: flex;
+    gap: 8px;
+    margin-top: 15px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.progress-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    transition: all 0.3s;
+}
+
+/* Progress dot colors - Beautiful unified scheme */
+.progress-dot.active {
+    background: linear-gradient(135deg, #8a7bff, #b366ff) !important;
+    box-shadow: 0 0 10px rgba(138, 123, 255, 0.8) !important;
+}
+
+.progress-dot.correct {
+    background: linear-gradient(135deg, #4fded8, #00d9ff) !important;
+    box-shadow: 0 0 10px rgba(79, 222, 216, 0.8) !important;
+}
+
+.progress-dot.incorrect {
+    background: linear-gradient(135deg, #ff6b9d, #ff416c) !important;
+    box-shadow: 0 0 10px rgba(255, 107, 157, 0.8) !important;
+}
+
+.progress-dot.partial {
+    background: linear-gradient(135deg, #ffd166, #ffb74d) !important;
+    box-shadow: 0 0 10px rgba(255, 209, 102, 0.8) !important;
+}
+
+/* Selection counter */
+.selection-counter {
+    display: inline-block;
+    padding: 4px 10px;
+    background: rgba(138,123,255,0.2);
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    color: #8a7bff;
+    margin-left: 10px;
+}
+
+/* Circle progress bar container */
+.circle-progress-container {
+    text-align: center;
+    margin: 20px 0;
+}
+
+/* Clickable option card */
+.clickable-option {
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.clickable-option:hover {
+    transform: translateY(-2px);
+}
+
+/* Make buttons invisible but clickable */
+.invisible-button {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+    z-index: 10;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background: transparent;
+}
+
+.option-card-container {
+    position: relative;
+}
+
+/* Progress bar with status-based gradient */
+.progress-bar-status {
+    height: 100%;
+    border-radius: 10px;
+    position: relative;
+    transition: width 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    box-shadow: 0 0 20px rgba(79, 222, 216, 0.3);
+}
+
+.progress-bar-status::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255,255,255,0.2), 
+        transparent);
+    animation: shimmer 2s infinite;
+}
+
+/* Multi-segment progress bar */
+.multi-segment-progress {
+    width: 100%;
+    height: 16px;
+    background: rgba(255,255,255,0.05);
+    border-radius: 10px;
+    margin: 15px 0;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+}
+
+.progress-segment {
+    height: 100%;
+    transition: all 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-segment::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, 
+        transparent, 
+        rgba(255,255,255,0.3), 
+        transparent);
+    animation: shimmer 3s infinite;
+}
+
+.segment-correct {
+    background: linear-gradient(135deg, #4fded8, #00d9ff);
+    box-shadow: 0 0 15px rgba(79, 222, 216, 0.4);
+}
+
+.segment-partial {
+    background: linear-gradient(135deg, #ffd166, #ffb74d);
+    box-shadow: 0 0 15px rgba(255, 209, 102, 0.4);
+}
+
+.segment-incorrect {
+    background: linear-gradient(135deg, #ff6b9d, #ff416c);
+    box-shadow: 0 0 15px rgba(255, 107, 157, 0.4);
+}
+
+.segment-active {
+    background: linear-gradient(135deg, #8a7bff, #b366ff);
+    box-shadow: 0 0 15px rgba(138, 123, 255, 0.4);
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; }
+    100% { opacity: 0.8; }
+}
+
+.segment-pending {
+    background: rgba(255,255,255,0.1);
+}
+
+/* Footer tab navigation styling */
+div[data-testid="stHorizontalBlock"] {
+    margin-top: 20px !important;
+    margin-bottom: 20px !important;
+}
+
+/* Make tab buttons more visible */
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(90deg, #8a7bff, #4fded8) !important;
+    font-weight: bold !important;
+    color: white !important;
+}
+
+div[data-testid="stButton"] > button[kind="secondary"] {
+    background: rgba(255,255,255,0.05) !important;
+    border: 1px solid rgba(255,255,255,0.1) !important;
+    color: #9aa3bf !important;
+}
+
+/* Progress tab metric cards */
+.metric-card {
+    padding: 20px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 1px solid rgba(255,255,255,0.05);
+    height: 100%;
+    text-align: center;
+    transition: transform 0.3s ease;
+}
+
+.metric-card:hover {
+    transform: translateY(-5px);
+    border-color: rgba(255,255,255,0.1);
+}
+
+.metric-value {
+    font-size: 36px;
+    font-weight: bold;
+    margin: 10px 0;
+    background: linear-gradient(90deg, #4fded8, #8a7bff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+.metric-card img{
+    height:70px;
+    width:70px,
+    object-fit:contain;
+}
+.metric-label {
+    font-size: 14px;
+    color: #9aa3bf;
+    margin-bottom: 10px;
+}
+
+.metric-icon {
+    font-size: 24px;
+    margin-bottom: 10px;
+}
+
+/* Legend container */
+.legend-container {
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border-radius: 12px;
+    padding: 20px;
+    border: 1px solid rgba(255,255,255,0.05);
+    margin: 20px 0;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    margin: 8px 0;
+}
+
+.legend-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    margin-right: 10px;
+    flex-shrink: 0;
+}
+
+.legend-text {
+    font-size: 14px;
+    color: #e6eef9;
+}
+
+.legend-description {
+    font-size: 12px;
+    color: #9aa3bf;
+    margin-left: 26px;
+}
+
+
+/* FIXED: Custom GIF Loader Styles - Reduced gap between loader and text */
+.custom-loader-container {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 2px !important;  /* REDUCED from 5px to 2px */
+    padding: 10px;
+    margin: 10px 0;
+    text-align: center;
+    flex-wrap: nowrap;
+}
+.target-icon{
+    width:25px;
+    height:25px;
+    }
+
+.custom-loader {
+    width: 60px !important;
+    height: 60px !important;
+    border-radius: 50%;
+    margin: 0 !important;
+}
+
+.custom-loader-text {
+    color: var(--muted);
+    font-size: 22px !important;  
+    font-weight: 600 !important;
+    margin-left: 0 !important;
+    padding-left: 2px !important;  /* REDUCED from 5px to 2px */
+    display: inline-flex !important;
+    align-items: center !important;
+}
+
+/* Hide default spinner containers */
+[data-testid="stSpinner"] {
+    display: none !important;
+}
+
+.stSpinner {
+    display: none !important;
+}
+
+/* NEW: Button Gradient Styles for Notes & Quiz and Progress Sections */
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(90deg, #8a7bff, #4fded8) !important;
+    font-weight: bold !important;
+    color: white !important;
+    border: none !important;
+    box-shadow: 0 8px 20px rgba(138, 123, 255, 0.3) !important;
+}
+
+div[data-testid="stButton"] > button[kind="secondary"] {
+    background: linear-gradient(90deg, rgba(138, 123, 255, 0.1), rgba(79, 222, 216, 0.1)) !important;
+    border: 1px solid rgba(138, 123, 255, 0.3) !important;
+    color: #8a7bff !important;
+}
+
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    background: linear-gradient(90deg, #7a6bff, #3fced8) !important;
+    box-shadow: 0 12px 25px rgba(138, 123, 255, 0.4) !important;
+    transform: translateY(-2px) !important;
+}
+
+div[data-testid="stButton"] > button[kind="secondary"]:hover {
+    background: linear-gradient(90deg, rgba(138, 123, 255, 0.2), rgba(79, 222, 216, 0.2)) !important;
+    border-color: rgba(138, 123, 255, 0.5) !important;
+}
+
+/* Chat section specific button styles - keep original */
+[data-testid="stForm"] [data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(90deg, #2563eb, #3b82f6) !important;
+    border: none !important;
+}
+
+[data-testid="stForm"] [data-testid="stButton"] > button[kind="primary"]:hover {
+    background: linear-gradient(90deg, #1d4ed8, #2563eb) !important;
+}
+
+/* Direct click option cards - no button overlay needed */
+.option-card-clickable {
+    cursor: pointer !important;
+    transition: all 0.3s ease !important;
+}
+
+.option-card-clickable:hover {
+    border-color: rgba(79,222,216,0.4) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Simplified direct click option */
+.option-direct-click {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+/* Ensure proper spacing for loader in chat */
+[data-testid="stVerticalBlock"] > div > .element-container:has(.custom-loader-container) {
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* NEW: Circle progress bar that behaves like progress line - FIXED to use consistent gradient */
+.circle-progress-line {
+    position: relative;
+    width: 100px;
+    height: 100px;
+    margin: 0 auto;
+}
+
+.circle-progress-line svg {
+    transform: rotate(-90deg);
+}
+
+.circle-progress-line .progress-background {
+    fill: none;
+    stroke: rgba(255,255,255,0.1);
+    stroke-width: 8;
+}
+
+.circle-progress-line .progress-fill {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 8;
+    transition: stroke-dashoffset 0.5s ease;
+}
+
+.circle-progress-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    width: 100%;
+}
+
+.circle-progress-value {
+    font-size: 20px;
+    font-weight: bold;
+    color: #e6eef9;
+    line-height: 1;
+}
+
+.circle-progress-label {
+    font-size: 12px;
+    color: #9aa3bf;
+    margin-top: 2px;
+}
+.report-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 50px;
+    width: 50px;
+    margin-right: 0px;
+    border-radius: 8px;
+    object-fit: contain;
+    position: relative;
+    background: transparent;
+    padding: 2px;
+}
+
+.report-icon::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, #667eea 0%, #764ba2 100%);
+    border-radius: 10px;
+    z-index: -1;
+}
+/* ============================================
+   BIG CALENDAR ICON FIX - FINAL SOLUTION
+   ============================================ */
+
+/* Target ALL images with calendar-icon-class in expanders */
+div[data-testid="stExpander"] img[alt="calendar-icon-class"] {
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    min-height: 32px !important;
+    max-width: 32px !important;
+    max-height: 32px !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
+    object-fit: contain !important;
+    transition: all 0.3s ease !important;
+}
+
+
+
+/* Target the specific structure of expander headers */
+div[data-testid="stExpander"] > div:first-child > div:first-child img[alt="calendar-icon-class"],
+div[data-testid="stExpander"]Details img[alt="calendar-icon-class"],
+.stExpander img[alt="calendar-icon-class"] {
+    width: 40px !important;
+    height: 40px !important;
+}
+
+/* Nuclear option - target any image with calendar-icon-class anywhere */
+img[alt="calendar-icon-class"] {
+    width: 40px !important;
+    height: 40px !important;
+}
+
+/* ============================================
+   BIG QUIZ ICON FIX - FINAL SOLUTION
+   ============================================ */
+
+/* Target ALL images with quiz-icon-class in expanders */
+div[data-testid="stExpander"] img[alt="quiz-icon-class"] {
+    width: 62px !important;
+    height: 62px !important;
+    min-width: 62px !important;
+    min-height: 62px !important;
+    max-width: 62px !important;
+    max-height: 62px !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
+    object-fit: contain !important;
+    transition: all 0.3s ease !important;
+}
+
+
+
+/* Target the specific structure of expander headers */
+div[data-testid="stExpander"] > div:first-child > div:first-child img[alt="quiz-icon-class"],
+div[data-testid="stExpander"]Details img[alt="quiz-icon-class"],
+.stExpander img[alt="quiz-icon-class"] {
+    width: 60px !important;
+    height: 60px !important;
+}
+
+/* Nuclear option - target any image with quiz-icon-class anywhere */
+img[alt="quiz-icon-class"] {
+    width: 60px !important;
+    height: 60px !important;
+}
+.option-grid {
+    border-radius:12px;
+    padding:20px;
+    background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
+    border:1px solid rgba(255,255,255,0.03);
+    box-shadow:0 8px 20px rgba(0,0,0,0.4);
+    margin:10px auto;
+    max-width:900px;
+}
+
+/* Button as Card */
+div[data-testid="stButton"] > button {
+    padding: 20px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 2px solid rgba(255,255,255,0.08);
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    user-select: none;
+    min-height: 80px;
+}
+
+div[data-testid="stButton"] > button:hover {
+    transform: translateY(-3px);
+    border-color: rgba(79,222,216,0.3);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+}
+
+/* Selected Card */
+div[data-testid="stButton"].selected > button {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15));
+    border-color: rgba(138,123,255,0.6);
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25);
+}
+/* Selected Card After */
+div[data-testid="stButton"].selected::after > button {
+    content: '✓';
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: 28px;
+    height: 28px;
+    background: rgba(138,123,255,0.3);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: white;
+    font-size: 16px;
+}
+
+/* Option Label Circle */
+.opt-label {
+    padding: 20px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+    border: 2px solid rgba(255,255,255,0.08);
+    cursor: pointer;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+    user-select: none;
+    min-height: 80px;
+}
+
+.opt-text {
+    font-size: 16px;
+    line-height: 1.4;
+}
+
+.opt-hint {
+    font-size: 12px;
+    color: #555;
+    margin-top: 6px;
+}
+
+/* ============================================
+   FIX: SMALLER NAVIGATION BUTTONS
+   ============================================ */
+div[data-testid="stButton"] > button[kind="secondary"] {
+    padding: 10px 16px !important;  /* Smaller padding */
+    font-size: 14px !important;     /* Smaller font */
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+div[data-testid="stButton"] > button[kind="primary"] {
+    padding: 10px 16px !important;  /* Smaller padding */
+    font-size: 14px !important;     /* Smaller font */
+    height: auto !important;
+    min-height: 0 !important;
+}
+
+/* ============================================
+   IMPROVED OPTION BUTTONS - Same as Feedback Cards
+   ============================================ */
+.quiz-option-button {
+    padding: 20px !important;
+    border-radius: 14px !important;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)) !important;
+    border: 2px solid rgba(255,255,255,0.08) !important;
+    cursor: pointer !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
+    overflow: hidden !important;
+    user-select: none !important;
+    min-height: 80px !important;
+    width: 100% !important;
+    margin: 8px 0 !important;
+    text-align: left !important;
+    font-size: 16px !important;
+    line-height: 1.4 !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+}
+
+.quiz-option-button:hover {
+    transform: translateY(-3px) !important;
+    border-color: rgba(79,222,216,0.3) !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4) !important;
+}
+
+.quiz-option-button.selected {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15)) !important;
+    border-color: rgba(138,123,255,0.6) !important;
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25) !important;
+}
+
+.quiz-option-button.selected::after {
+    content: '✓' !important;
+    position: absolute !important;
+    top: 12px !important;
+    right: 12px !important;
+    width: 28px !important;
+    height: 28px !important;
+    background: rgba(138,123,255,0.3) !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-weight: bold !important;
+    color: white !important;
+    font-size: 16px !important;
+}
+
+/* Option button label style */
+.option-btn-content {
+    display: flex !important;
+    align-items: center !important;
+}
+
+.option-btn-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    background: rgba(138,123,255,0.15);
+    border-radius: 10px;
+    font-weight: bold;
+    margin-right: 15px;
+    color: #8a7bff;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.quiz-option-button.selected .option-btn-label {
+    background: rgba(138,123,255,0.4);
+    color: white;
+    transform: scale(1.1);
+}
+
+/* For buttons inside option-grid */
+.option-grid div[data-testid="stButton"] > button {
+    padding: 20px !important;
+    border-radius: 14px !important;
+    background: linear-gradient(135deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)) !important;
+    border: 2px solid rgba(255,255,255,0.08) !important;
+    cursor: pointer !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    position: relative !important;
+    overflow: hidden !important;
+    user-select: none !important;
+    min-height: 80px !important;
+    width: 100% !important;
+    margin: 8px 0 !important;
+    text-align: left !important;
+    font-size: 16px !important;
+    line-height: 1.4 !important;
+    font-weight: 500 !important;
+    color: var(--text) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button:hover {
+    transform: translateY(-3px) !important;
+    border-color: rgba(79,222,216,0.3) !important;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.4) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button[aria-pressed="true"] {
+    background: linear-gradient(135deg, rgba(138,123,255,0.2), rgba(79,222,216,0.15)) !important;
+    border-color: rgba(138,123,255,0.6) !important;
+    box-shadow: 0 12px 35px rgba(138,123,255,0.25) !important;
+}
+
+.option-grid div[data-testid="stButton"] > button[aria-pressed="true"]::after {
+    content: '✓' !important;
+    position: absolute !important;
+    top: 12px !important;
+    right: 12px !important;
+    width: 28px !important;
+    height: 28px !important;
+    background: rgba(138,123,255,0.3) !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-weight: bold !important;
+    color: white !important;
+    font-size: 16px !important;
+}
