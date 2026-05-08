@@ -1446,16 +1446,16 @@ def get_base64_file(file_path):
         return ""
 
 # Then update your image loading:
-Avatar_Icon = get_base64_file("Bot_Avatar.png") if os.path.exists("Bot_Avatar.png") else ""
-tab_chat_icon = get_base64_file("tab_chat_icon.png") if os.path.exists("tab_chat_icon.png") else ""
-Spinner_Loader = get_base64_file("Spinner_Loader.gif") if os.path.exists("Spinner_Loader.gif") else ""
-notes_icon = get_base64_file("notes.png") if os.path.exists("notes.png") else ""
-progress_icon = get_base64_file("progress.png") if os.path.exists("progress.png") else ""
-report_icon = get_base64_file("3d-report.png") if os.path.exists("3d-report.png") else ""
-Calendar_Icon = get_base64_file("Calendar.png") if os.path.exists("Calendar.png") else ""
-target_icon = get_base64_file("target.png") if os.path.exists("target.png") else ""
-book_icon = get_base64_file("book.jpeg") if os.path.exists("book.jpeg") else ""
-quiz_icon = get_base64_file("quiz.jpeg") if os.path.exists("quiz.jpeg") else ""
+Avatar_Icon = get_base64_file("Assets/Bot_Avatar.png") if os.path.exists("Assets/Bot_Avatar.png") else ""
+tab_chat_icon = get_base64_file("Assets/tab_chat_icon.png") if os.path.exists("Assets/tab_chat_icon.png") else ""
+Spinner_Loader = get_base64_file("Assets/Spinner_Loader.gif") if os.path.exists("Assets/Spinner_Loader.gif") else ""
+notes_icon = get_base64_file("Assets/notes.png") if os.path.exists("Assets/notes.png") else ""
+progress_icon = get_base64_file("Assets/progress.png") if os.path.exists("Assets/progress.png") else ""
+report_icon = get_base64_file("Assets/3d-report.png") if os.path.exists("Assets/3d-report.png") else ""
+Calendar_Icon = get_base64_file("Assets/Calendar.png") if os.path.exists("Assets/Calendar.png") else ""
+target_icon = get_base64_file("Assets/target.png") if os.path.exists("Assets/target.png") else ""
+book_icon = get_base64_file("Assets/book.jpeg") if os.path.exists("Assets/book.jpeg") else ""
+quiz_icon = get_base64_file("Assets/quiz.jpeg") if os.path.exists("Assets/quiz.jpeg") else ""
 # Also update the show_custom_loader function to properly use base64 for GIFs:
 def show_custom_loader(text="Processing..."):
     """Display custom GIF loader using base64 with minimal gap"""
