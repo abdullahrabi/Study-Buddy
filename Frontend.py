@@ -4,20 +4,24 @@ import tempfile
 import base64
 import time
 import streamlit.components.v1 as components
-from ai_utils import (
+from Notes_Quiz_Section import (
     extract_text_from_pdf,
     extract_text_from_docx,
     extract_text_from_txt,
     generate_quiz_from_notes,
     evaluate_quiz_attempt,
     store_notes_and_progress,
-    fetch_progress_from_pinecone,
+    format_quiz_for_display,
+)
+from Chatbot import (
+    retrieve_context,
     save_chat_history,
     fetch_chat_history,
     get_gemini_response,
-    format_quiz_for_display,
 )
-
+from Progress import (
+    fetch_progress_from_pinecone,
+)
 # -----------------------------
 # LOAD CSS FROM EXTERNAL FILE
 # -----------------------------
