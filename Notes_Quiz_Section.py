@@ -21,6 +21,8 @@ import operator
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
+from langchain_groq import ChatGroq
+from typer import prompt
 import wikipedia
 
 # ---------------- TIMEZONE SUPPORT ----------------
@@ -37,6 +39,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
@@ -473,20 +476,18 @@ Output valid JSON strictly in this format:
 """
     
     try:
-        model = "gemini-2.5-flash"
+       
         
         print(f"[DEBUG] Generating quiz with difficulty: {difficulty}")
         print(f"[DEBUG] Prompt length: {len(prompt)}")
         
-        response = client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=4048,
-            )
+        llm = ChatGroq(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.7,
+            groq_api_key=GROQ_API_KEY
         )
         
+        response = llm.invoke(prompt)
         text = response.text if hasattr(response, 'text') else str(response)
         text = text.strip()
         

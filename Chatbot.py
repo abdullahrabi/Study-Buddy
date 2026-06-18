@@ -4,7 +4,6 @@ import time
 import re
 import random
 from datetime import datetime
-from turtle import st
 from typing import List, Dict, Any, Generator
 from dotenv import load_dotenv
 from google import genai
@@ -12,8 +11,6 @@ from google.genai import types
 from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
-import langgraph  # For agentic capabilities and tool usage
-import langchain  # For potential future use in chaining LLM calls and tools
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Annotated
 import operator
@@ -21,7 +18,13 @@ from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, Too
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 from tavily import TavilyClient
+from groq import Groq
+from langchain_groq import ChatGroq
+from langchain.agents import create_agent
+from langgraph.checkpoint.memory import MemorySaver
 import wikipedia
+import requests
+
 # ---------------- TIMEZONE SUPPORT ----------------
 try:
     import pytz
@@ -29,12 +32,15 @@ try:
 except ImportError:
     print("[WARNING] pytz not installed. Install with: pip install pytz")
     TIMEZONE_AVAILABLE = False
+
 # ---------------- LOAD ENV VARIABLES ----------------
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
@@ -46,13 +52,9 @@ if not SERPAPI_KEY:
     raise ValueError("❌ SERPAPI_KEY not found!")
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
-# Initialize Gemini client with latest google-genai SDK
 client = genai.Client(api_key=GEMINI_API_KEY)
-
-# Initialize Pinecone
 pc = Pinecone(api_key=PINECONE_API_KEY)
 
-# Create or connect to Pinecone index
 existing_indexes = [i.name for i in pc.list_indexes()]
 if INDEX_NAME not in existing_indexes:
     pc.create_index(
@@ -62,12 +64,11 @@ if INDEX_NAME not in existing_indexes:
         spec=ServerlessSpec(cloud="aws", region=PINECONE_ENVIRONMENT)
     )
 index = pc.Index(INDEX_NAME)
+
 # ---------------- TIMEZONE UTILITIES ----------------
 def get_user_timezone(timezone_str=None):
-    """Get timezone object from string, fallback to default if invalid"""
     if not TIMEZONE_AVAILABLE:
         return None
-    
     try:
         if timezone_str:
             return pytz.timezone(timezone_str)
@@ -78,11 +79,9 @@ def get_user_timezone(timezone_str=None):
         return pytz.timezone(DEFAULT_TIMEZONE)
 
 def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d %H:%M:%S"):
-    """Convert UTC timestamp to local timezone string"""
     if not TIMEZONE_AVAILABLE:
         dt = datetime.utcfromtimestamp(timestamp)
         return dt.strftime(format_str)
-    
     try:
         dt_utc = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.UTC)
         user_tz = get_user_timezone(timezone_str)
@@ -94,10 +93,8 @@ def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d
         return dt.strftime(format_str)
 
 def get_relative_time(timestamp, timezone_str=None):
-    """Get human-readable relative time (e.g., '2 hours ago')"""
     now = time.time()
     diff = now - timestamp
-    
     if diff < 60:
         return "just now"
     elif diff < 3600:
@@ -113,13 +110,10 @@ def get_relative_time(timestamp, timezone_str=None):
         return format_timestamp_to_local(timestamp, timezone_str, "%b %d, %Y")
 
 def get_common_timezones():
-    """Return list of common timezones for dropdown selection"""
     if not TIMEZONE_AVAILABLE:
         return ["UTC"]
-    
     return [
-        'UTC',
-        'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+        'UTC', 'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
         'America/Toronto', 'America/Vancouver', 'Europe/London', 'Europe/Paris',
         'Europe/Berlin', 'Europe/Moscow', 'Asia/Kolkata', 'Asia/Singapore',
         'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Dubai', 'Australia/Sydney',
@@ -128,21 +122,64 @@ def get_common_timezones():
     ]
 
 def get_current_time_in_timezone(timezone_str=None):
-    """Get current time formatted in user's timezone"""
     current_time = time.time()
     return format_timestamp_to_local(current_time, timezone_str)
 
 def format_timestamp_for_display(timestamp, user_timezone=None):
-    """Format timestamp for nice display in UI"""
     if not timestamp:
         return "N/A"
     local_time = format_timestamp_to_local(timestamp, user_timezone)
     relative_time = get_relative_time(timestamp, user_timezone)
     return f"{local_time} ({relative_time})"
 
+# ---------------- EMBEDDING FUNCTION ----------------
+def embed_text(text: str):
+    try:
+        if not text or not text.strip():
+            print("[WARNING] Empty text provided for embedding")
+            return [random.uniform(0.01, 0.02) for _ in range(768)]
+        
+        text = text.strip()
+        if len(text) > 10000:
+            text = text[:10000]
+        
+        result = client.models.embed_content(
+            model="gemini-embedding-2",
+            contents=[text],
+            config=types.EmbedContentConfig(
+                output_dimensionality=768
+            )
+        )
+        
+        emb = None
+        if result and result.embeddings and len(result.embeddings) > 0:
+            if hasattr(result.embeddings[0], 'values'):
+                emb = result.embeddings[0].values
+            elif isinstance(result.embeddings[0], list):
+                emb = result.embeddings[0]
+            else:
+                emb = list(result.embeddings[0])
+        
+        if emb is None:
+            return [random.uniform(0.01, 0.02) for _ in range(768)]
+        
+        if len(emb) != 768:
+            if len(emb) < 768:
+                emb = emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
+            else:
+                emb = emb[:768]
+        
+        if all(abs(v) < 0.0001 for v in emb):
+            emb = [v + (random.random() * 0.0001 - 0.00005) for v in emb]
+        
+        return emb
+        
+    except Exception as e:
+        print(f"[ERROR] embed_text: {e}")
+        return [random.uniform(0.01, 0.02) for _ in range(768)]
+
 # ---------------- RAG CONTEXT RETRIEVAL ----------------
 def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
-    """Enhanced RAG with filtering and relevance scoring"""
     try:
         q_emb = embed_text(query)
         
@@ -178,7 +215,6 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
                 seen_texts.add(text)
                 source_type = meta.get("type", "unknown")
                 context_text = f"[From {source_type}]: {text}"
-                
                 if len(contexts) < 3:
                     contexts.append(context_text)
         
@@ -189,9 +225,9 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
     except Exception as e:
         print(f"[ERROR] retrieve_context: {e}")
         return ""
+
 # ---------------- CHAT HISTORY FUNCTIONS ----------------
 def save_chat_history(user_id: str, chat_history: list, user_timezone=None):
-    """Save chat history to Pinecone"""
     try:
         if not chat_history or not isinstance(chat_history, list):
             return False
@@ -223,14 +259,12 @@ def save_chat_history(user_id: str, chat_history: list, user_timezone=None):
         }]
         
         index.upsert(vectors=vectors)
-        print(f"[INFO] Chat history saved for user {user_id}")
         return True
     except Exception as e:
         print(f"[ERROR] save_chat_history: {e}")
         return False
-#----------------- FETCH CHAT HISTORY ----------------
+
 def fetch_chat_history(user_id: str, user_timezone=None):
-    """Fetch complete chat history for a user"""
     try:
         query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
         
@@ -270,140 +304,203 @@ def fetch_chat_history(user_id: str, user_timezone=None):
     except Exception as e:
         print(f"[ERROR] fetch_chat_history: {e}")
         return []
-#---------------- EMBEDDING FUNCTION ----------------
-def embed_text(text: str):
-    """Generate embeddings using latest google-genai SDK with gemini-embedding-2 and output_dimensionality=768"""
+
+# ---------------- IMPROVED WIKIPEDIA TOOL ----------------
+@tool
+def search_wikipedia(query: str) -> str:
+    """Search Wikipedia for information about a topic."""
     try:
-        if not text or not text.strip():
-            print("[WARNING] Empty text provided for embedding")
-            return [random.uniform(0.01, 0.02) for _ in range(768)]
-        
-        text = text.strip()
-        if len(text) > 10000:
-            text = text[:10000]
-        
-        print(f"[DEBUG] Embedding text length: {len(text)}")
-        
-        # CORRECT METHOD using google-genai SDK with gemini-embedding-2 and output_dimensionality
-        result = client.models.embed_content(
-            model="gemini-embedding-2",
-            contents=[text],  # contents must be a list
-            config=types.EmbedContentConfig(
-                output_dimensionality=768  # Forces 768 dimensions for Pinecone compatibility
-            )
-        )
-        
-        # Extract embedding from response
-        emb = None
-        if result and result.embeddings and len(result.embeddings) > 0:
-            if hasattr(result.embeddings[0], 'values'):
-                emb = result.embeddings[0].values
-            elif isinstance(result.embeddings[0], list):
-                emb = result.embeddings[0]
-            else:
-                emb = list(result.embeddings[0])
-        
-        if emb is None:
-            print(f"[ERROR] Could not extract embedding from response: {type(result)}")
-            return [random.uniform(0.01, 0.02) for _ in range(768)]
-        
-        # With output_dimensionality=768, we should get exactly 768 dimensions
-        if len(emb) != 768:
-            print(f"[WARNING] Embedding length {len(emb)} != 768, adjusting")
-            if len(emb) < 768:
-                emb = emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
-            else:
-                emb = emb[:768]
-        
-        # Add small noise if all zeros
-        if all(abs(v) < 0.0001 for v in emb):
-            print(f"[WARNING] Embedding contains mostly zeros, adding small noise")
-            emb = [v + (random.random() * 0.0001 - 0.00005) for v in emb]
-        
-        print(f"[INFO] Generated embedding of length {len(emb)}")
-        return emb
-        
+        # Try using wikipedia library first
+        try:
+            search_results = wikipedia.search(query)
+            if not search_results:
+                return f"No Wikipedia articles found for '{query}'"
+            page = wikipedia.page(search_results[0])
+            return f"📚 Wikipedia: {page.title}\n\n{page.summary[:600]}...\n\n🔗 {page.url}"
+        except json.JSONDecodeError:
+            # Fallback: Use direct API request
+            import requests
+            url = "https://en.wikipedia.org/w/api.php"
+            params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "format": "json",
+                "srlimit": 1
+            }
+            response = requests.get(url, params=params, timeout=5)
+            data = response.json()
+            
+            if data.get("query", {}).get("search"):
+                title = data["query"]["search"][0]["title"]
+                # Get the summary
+                params = {
+                    "action": "query",
+                    "titles": title,
+                    "prop": "extracts",
+                    "exintro": True,
+                    "explaintext": True,
+                    "format": "json"
+                }
+                response = requests.get(url, params=params, timeout=5)
+                data = response.json()
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_data in pages.items():
+                    if "extract" in page_data:
+                        summary = page_data["extract"][:600]
+                        return f"📚 Wikipedia: {title}\n\n{summary}...\n\n🔗 https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+            
+            return f"No Wikipedia articles found for '{query}'"
+            
+    except wikipedia.exceptions.DisambiguationError as e:
+        return f"Multiple pages found for '{query}'. Options: {', '.join(e.options[:5])}"
+    except wikipedia.exceptions.PageError:
+        return f"No page found for '{query}'"
     except Exception as e:
-        print(f"[ERROR] embed_text: {e}")
-        import traceback
-        traceback.print_exc()
-        return [random.uniform(0.01, 0.02) for _ in range(768)]
+        print(f"[WARNING] Wikipedia error: {e}")
+        # Last fallback: Try simple API
+        try:
+            import requests
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}"
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if "title" in data and "extract" in data:
+                    return f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:600]}...\n\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
+        except:
+            pass
+        return f"Error searching Wikipedia for '{query}'. Please try again."
 
-
-# ---------------- ENHANCED CHATBOT WITH RAG (USING LATEST SDK) ----------------
-def get_gemini_response(user_input: str, history: list = None, user_id: str = None) -> Generator[str, None, None]:
-    """Chatbot with proper streaming response using latest google-genai SDK"""
+# ---------------- IMPROVED TAVILY TOOL ----------------
+@tool 
+def web_search(query: str) -> str:
+    """Performs a web search using Tavily and returns the top results."""
     try:
-        casual_phrases = ["hi", "hello", "hey", "good morning", "good evening", "how are you"]
-        is_casual = any(p in user_input.lower() for p in casual_phrases)
-        
-        history_text = ""
-        if history:
-            recent_history = history[-10:]
-            history_text = "\n".join([
-                f"{h.get('role', 'user').capitalize()}: {h.get('message', '')}"
-                for h in recent_history
-            ])
-        
-        context = ""
-        if user_id and not is_casual:
-            context = retrieve_context(user_input, user_id)
-        
-        if context:
-            prompt = f"""You are StudyBuddy 🤖, an AI tutor. Use the following context from the user's notes to provide accurate, helpful answers.
-
-RELEVANT STUDY CONTEXT:
-{context}
-
-CHAT HISTORY:
-{history_text}
-
-USER QUERY: {user_input}
-
-Instructions:
-1. If the context contains relevant information, use it to answer accurately
-2. If the context doesn't help, use your general knowledge
-3. Keep answers concise, educational, and encouraging
-4. Ask follow-up questions to deepen understanding when appropriate
-
-AI Tutor:"""
-        else:
-            prompt = f"""You are StudyBuddy 🤖, a friendly AI tutor. 
-
-CHAT HISTORY:
-{history_text}
-
-USER QUERY: {user_input}
-
-Provide a helpful, engaging response. If asking about study topics, offer to help with notes or quizzes.
-
-AI Tutor:"""
-        
-        # Use gemini-2.5-flash for best performance
-        model = "gemini-2.5-flash"
-        
-        # Generate streaming response using latest SDK
-        response = client.models.generate_content_stream(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7
-            )
+        client = TavilyClient(api_key=TAVILY_API_KEY)
+        response = client.search(
+            query=query,
+            search_depth="advanced",
+            max_results=5,
         )
         
-        # Yield chunks for proper streaming
-        for chunk in response:
-            if hasattr(chunk, 'text') and chunk.text:
-                yield chunk.text
-            elif hasattr(chunk, 'candidates') and chunk.candidates:
-                for candidate in chunk.candidates:
-                    if hasattr(candidate, 'content') and candidate.content:
-                        for part in candidate.content.parts:
-                            if hasattr(part, 'text') and part.text:
-                                yield part.text
-                
+        # Format the response nicely
+        if response and isinstance(response, dict):
+            results = response.get('results', [])
+            if results:
+                formatted_results = []
+                for i, result in enumerate(results[:3], 1):
+                    title = result.get('title', 'No title')
+                    content = result.get('content', 'No content')[:300]
+                    url = result.get('url', '')
+                    formatted_results.append(f"{i}. **{title}**\n   {content}...\n   🔗 {url}")
+                return f"🌐 Web Search Results:\n\n" + "\n\n".join(formatted_results)
+        
+        return str(response)
+    except Exception as e:
+        return f"Error performing web search: {str(e)}"
+
+# ---------------- MAIN CHATBOT FUNCTION ----------------
+def get_gemini_response(user_input: str, history: list = None, user_id: str = None) -> Generator[str, None, None]:
+    """StudyBuddy with RAG + Wikipedia + Tavily using LangChain Agent."""
+    try:
+        # System prompt
+        system_prompt = """You are StudyBuddy 🤖, a smart research assistant and tutor.
+
+Guidelines:
+1. Use the available tools to look up information when needed
+2. You can make multiple tool calls (either together or in sequence)
+3. Only look up information when you are sure of what you want
+4. If you need to look up information before asking a follow-up question, you are allowed to do that
+5. Always cite your sources when using tools
+6. Be helpful, educational, and encouraging
+7. When you get tool results, summarize them clearly for the user
+
+Available tools:
+- search_notes: Search the user's personal notes/documents
+- search_wikipedia: Search Wikipedia for encyclopedia knowledge
+- web_search: Search the web for current news and real-time information
+
+Remember: You are a tutor helping students learn, so explain concepts clearly and ask follow-up questions when appropriate."""
+
+        # Initialize LLM
+        llm = ChatGroq(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            temperature=0.3,
+            groq_api_key=GROQ_API_KEY
+        )
+
+        # Create RAG tool with user_id
+        @tool
+        def search_notes(query: str) -> str:
+            """Search the user's personal notes and documents."""
+            try:
+                context = retrieve_context(query, user_id, top_k=5)
+                if context:
+                    return f"📄 From your notes:\n\n{context}"
+                return "No relevant information found in your notes."
+            except Exception as e:
+                return f"Error searching notes: {str(e)}"
+
+        tools = [search_notes, search_wikipedia, web_search]
+
+        # Create agent
+        agent = create_agent(
+            model=llm,
+            tools=tools,
+            checkpointer=MemorySaver(),
+            system_prompt=system_prompt
+        )
+
+        # Prepare messages
+        messages = []
+        
+        # Add chat history
+        if history:
+            for h in history[-5:]:
+                if h.get('role') == 'user':
+                    messages.append(("user", h.get('message', '')))
+                else:
+                    messages.append(("assistant", h.get('message', '')))
+        
+        # Add current query
+        messages.append(("user", user_input))
+        
+        # Stream response with thread_id
+        input_state = {"messages": messages}
+        
+        config = {
+            "configurable": {
+                "thread_id": user_id or "default_thread"
+            }
+        }
+        
+        for chunk in agent.stream(
+            input_state, 
+            stream_mode="values",
+            config=config
+        ):
+            last_msg = chunk["messages"][-1]
+            
+            # Debug: Show tool usage
+            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                print(f"\n🔧 Using tools:")
+                for tool_call in last_msg.tool_calls:
+                    print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
+            
+            # Yield response
+            if hasattr(last_msg, 'content') and last_msg.content:
+                yield last_msg.content
+
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
-        def error_generator():
-            yield "I encountered an error. Please try again or rephrase your question."
-        return error_generator()
+        import traceback
+        traceback.print_exc()
+        yield f"Sorry, I encountered an error: {str(e)}"
+
+
+# ---------------- COMPATIBILITY WRAPPER ----------------
+def get_studybuddy_response(user_input: str, history: list = None, user_id: str = None):
+    """Alias for get_gemini_response"""
+    return get_gemini_response(user_input, history, user_id)
+
+
