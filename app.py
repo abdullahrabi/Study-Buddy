@@ -5,13 +5,16 @@ import base64
 import time
 import streamlit.components.v1 as components
 from Notes_Quiz_Section import (
-    extract_text_from_pdf,
-    extract_text_from_docx,
-    extract_text_from_txt,
     generate_quiz_from_notes,
+    generate_quiz_from_topic,
     evaluate_quiz_attempt,
-    store_notes_and_progress,
     format_quiz_for_display,
+    extract_text,
+    extract_text,  # This imports extract_text
+    extract_text_from_pdf,  # ADD THIS
+    extract_text_from_docx,  # ADD THIS
+    extract_text_from_txt,  # ADD THIS
+    store_notes_and_quizzes  # ADD THIS
 )
 from Chatbot import (
     retrieve_context,
@@ -20,8 +23,12 @@ from Chatbot import (
     get_gemini_response,
 )
 from Progress import (
+    store_progress,
     fetch_progress_from_pinecone,
+    cleanup_duplicate_progress,
+    format_progress_for_display
 )
+
 # -----------------------------
 # LOAD CSS FROM EXTERNAL FILE
 # -----------------------------
@@ -45,6 +52,7 @@ def load_css():
 
 # Call the CSS loader
 load_css()
+
 # -----------------------------
 # Base64 Image/GIF Loader
 # -----------------------------
@@ -69,11 +77,10 @@ Calendar_Icon = get_base64_file("Assets/Calendar.png") if os.path.exists("Assets
 target_icon = get_base64_file("Assets/target.png") if os.path.exists("Assets/target.png") else ""
 book_icon = get_base64_file("Assets/book.jpeg") if os.path.exists("Assets/book.jpeg") else ""
 quiz_icon = get_base64_file("Assets/quiz.jpeg") if os.path.exists("Assets/quiz.jpeg") else ""
-# Also update the show_custom_loader function to properly use base64 for GIFs:
+
 def show_custom_loader(text="Processing..."):
     """Display custom GIF loader using base64 with minimal gap"""
     if Spinner_Loader:
-        # FIXED: Reduced gap between loader and text
         loader_html = f"""
         <div class="custom-loader-container">
             <img src="data:image/gif;base64,{Spinner_Loader}" class="custom-loader" alt="Loading...">
@@ -128,18 +135,20 @@ defaults = {
     "chat_input": "",
     "last_sent_message": "",
     "uploaded_file": None,
-    "selected_options": {},   # Track selected options for current question
-    "question_answered": {},  # Track which questions have been answered
-    "show_feedback": {},      # Track if feedback should be shown for each question
-    "answer_submitted": {},   # Track if answer has been submitted for each question
-    "question_status": {},    # Track status of each question (correct/incorrect/partial)
-    "last_clicked_option": None,  # Track last clicked option for interactivity
-    "need_rerun": False,      # Flag to trigger rerun
-    "active_tab": "Notes & Quiz",  # Track active tab for navigation
-    "ai_responding": False,   # Track if AI is responding in chat
-    "streaming_message": None,  # Track the streaming message
-    "streaming_finished": False,  # Track if streaming is finished
-    "current_accuracy": 0,    # Track current accuracy for progress bar colors
+    "selected_options": {},
+    "question_answered": {},
+    "show_feedback": {},
+    "answer_submitted": {},
+    "question_status": {},
+    "last_clicked_option": None,
+    "need_rerun": False,
+    "active_tab": "Notes & Quiz",
+    "ai_responding": False,
+    "streaming_message": "",  # Store the streaming message
+    "streaming_finished": False,
+    "current_accuracy": 0,
+    "chat_placeholder": None,  # Placeholder for streaming
+    "streaming_chunks": [],  # Store streaming chunks
 }
 
 for k, v in defaults.items():
@@ -241,19 +250,14 @@ def submit_answer(question_idx, answer_type, show_feedback=True):
         selected = st.session_state.selected_options[question_idx]
         if selected:
             if answer_type == "single":
-                # Store as single letter
                 st.session_state.answers[question_idx] = list(selected)[0].upper()
             else:
-                # Store as comma-separated string, sorted alphabetically
                 st.session_state.answers[question_idx] = ",".join(sorted([opt.upper() for opt in list(selected)]))
             
             st.session_state.question_answered[question_idx] = True
             st.session_state.answer_submitted[question_idx] = True
-            
-            # Always show feedback for all modes now
             st.session_state.show_feedback[question_idx] = True
             
-            # Clear selection for next question
             if question_idx in st.session_state.selected_options:
                 del st.session_state.selected_options[question_idx]
             st.session_state.last_clicked_option = None
@@ -264,7 +268,7 @@ def submit_answer(question_idx, answer_type, show_feedback=True):
         st.session_state.need_rerun = True
 
 # -----------------------------
-# NEW: Multi-Segment Progress Bar Functions
+# Quiz Progress Helpers
 # -----------------------------
 def create_multi_segment_progress_bar(total_questions):
     """Create a beautiful multi-segment progress bar showing each question's status"""
@@ -278,7 +282,6 @@ def create_multi_segment_progress_bar(total_questions):
         status = st.session_state.question_status.get(i, "")
         
         if i < st.session_state.current_q:
-            # Past questions
             if status == "correct":
                 segment_class = "segment-correct"
             elif status == "partial":
@@ -288,8 +291,7 @@ def create_multi_segment_progress_bar(total_questions):
             else:
                 segment_class = "segment-pending"
         elif i == st.session_state.current_q:
-            # Current question
-            if status:  # Already answered current question
+            if status:
                 if status == "correct":
                     segment_class = "segment-correct"
                 elif status == "partial":
@@ -299,14 +301,12 @@ def create_multi_segment_progress_bar(total_questions):
                 else:
                     segment_class = "segment-pending"
             else:
-                segment_class = "segment-active"  # Current active question
+                segment_class = "segment-active"
         else:
-            # Future questions
             segment_class = "segment-pending"
         
         segments_html += f'<div class="progress-segment {segment_class}" style="width: {segment_width}%;"></div>'
     
-    # Calculate percentages
     completed_count = len([i for i in range(total_questions) if i in st.session_state.question_answered])
     progress_percentage = (completed_count / total_questions * 100) if total_questions > 0 else 0
     
@@ -322,41 +322,6 @@ def create_multi_segment_progress_bar(total_questions):
     </div>
     """
 
-def get_progress_colors(accuracy_percentage):
-    """Get unified color scheme based on accuracy percentage"""
-    if accuracy_percentage >= 80:
-        return {
-            "primary": "#4fded8",  # Green/Teal
-            "secondary": "#00d9ff",  # Bright Teal
-            "gradient": "linear-gradient(135deg, #4fded8 0%, #00d9ff 100%)",
-            "status": "excellent",
-            "icon": "🎯"
-        }
-    elif accuracy_percentage >= 60:
-        return {
-            "primary": "#8a7bff",  # Purple
-            "secondary": "#b366ff",  # Bright Purple
-            "gradient": "linear-gradient(135deg, #8a7bff 0%, #b366ff 100%)",
-            "status": "good",
-            "icon": "👍"
-        }
-    elif accuracy_percentage >= 40:
-        return {
-            "primary": "#ff6b9d",  # Pink
-            "secondary": "#ff8e6b",  # Orange
-            "gradient": "linear-gradient(135deg, #ff6b9d 0%, #ff8e6b 100%)",
-            "status": "fair",
-            "icon": "💪"
-        }
-    else:
-        return {
-            "primary": "#ff416c",  # Red
-            "secondary": "#ff4b2b",  # Dark Red
-            "gradient": "linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%)",
-            "status": "needs_improvement",
-            "icon": "🔥"
-        }
-
 def get_current_accuracy():
     """Calculate current accuracy based on answered questions"""
     answered_questions = [i for i in st.session_state.question_answered.keys()]
@@ -367,7 +332,6 @@ def get_current_accuracy():
     correct_count = sum(1 for i in answered_questions if st.session_state.question_status.get(i) == "correct")
     partial_count = sum(1 for i in answered_questions if st.session_state.question_status.get(i) == "partial")
     
-    # Weight partial as 0.5 correct
     weighted_correct = correct_count + (partial_count * 0.5)
     total_weighted = len(answered_questions)
     
@@ -380,7 +344,6 @@ def get_current_accuracy():
 
 def create_gradient_progress_bar(percentage, difficulty="medium", scenario="default"):
     """Create a beautiful gradient progress bar based on scenario"""
-    # Beautiful gradient colors for different scenarios
     gradients = {
         "default": "linear-gradient(135deg, #4fded8 0%, #8a7bff 50%, #ff6b9d 100%)",
         "excellent": "linear-gradient(135deg, #4fded8 0%, #00d9ff 100%)",
@@ -398,7 +361,6 @@ def create_gradient_progress_bar(percentage, difficulty="medium", scenario="defa
         "quiz_completed": "linear-gradient(135deg, #4fded8 0%, #00d9ff 100%)"
     }
     
-    # Determine gradient based on scenario and difficulty
     if scenario in gradients:
         gradient = gradients[scenario]
     elif difficulty.lower() in gradients:
@@ -419,18 +381,12 @@ def create_gradient_progress_bar(percentage, difficulty="medium", scenario="defa
 
 def create_quiz_progress_indicator(current_idx, total_questions, difficulty="medium"):
     """Create a visual quiz progress indicator with unified colors"""
-    # Calculate current accuracy
     accuracy = get_current_accuracy()
     
-    # Get unified color scheme based on accuracy
-    colors = get_progress_colors(accuracy)
-    
-    # Generate progress dots with appropriate colors
     dots_html = ""
     for i in range(total_questions):
         status_class = ""
         if i < current_idx:
-            # For previous questions, show their status
             status = st.session_state.question_status.get(i, "")
             if status == "correct":
                 status_class = "correct"
@@ -438,14 +394,11 @@ def create_quiz_progress_indicator(current_idx, total_questions, difficulty="med
                 status_class = "partial"
             elif status == "incorrect":
                 status_class = "incorrect"
-            else:
-                status_class = ""  # Not answered yet (shouldn't happen for i < current_idx)
         elif i == current_idx:
-            status_class = "active"  # Current question
+            status_class = "active"
         
         dots_html += f'<div class="progress-dot {status_class}"></div>'
     
-    # NEW: Create multi-segment progress bar
     segment_bar = create_multi_segment_progress_bar(total_questions)
     
     return {
@@ -472,27 +425,17 @@ def create_quiz_progress_indicator(current_idx, total_questions, difficulty="med
             </div>
         </div>
         """,
-        "segment_bar": segment_bar,  # NEW: Multi-segment bar
+        "segment_bar": segment_bar,
         "dots": f'<div class="quiz-progress-dots">{dots_html}</div>',
-        "colors": colors,
         "accuracy": accuracy
     }
 
-# FIXED: Circle progress bar that behaves like progress line - consistent gradient throughout quiz
 def create_circle_progress_bar(completed_count, total_questions, current_question_idx):
-    """Create a circle progress bar that behaves like progress bar line - consistent gradient"""
-    # Calculate progress percentage
+    """Create a circle progress bar"""
     progress_percentage = (completed_count / total_questions * 100) if total_questions > 0 else 0
-    
-    # Use the SAME gradient as the progress bar line throughout the quiz
-    # This ensures consistency and prevents it from turning red
     circle_gradient = "url(#circleGradient)"
-    
-    # SVG circle properties
     radius = 45
     circumference = 2 * 3.14159 * radius
-    # Calculate the stroke-dashoffset based on progress
-    # 0% progress = full circle hidden, 100% progress = full circle visible
     dash_offset = circumference - (progress_percentage / 100 * circumference)
     
     return f"""
@@ -551,41 +494,32 @@ def get_difficulty_instructions(difficulty, answer_type=None):
             """
     return ""
 
-# UPDATED FUNCTION: Option buttons with same styling as feedback cards
 def display_option_buttons(question_idx, options, current_selection, answer_type, difficulty):
-    """Simplest working solution for option buttons"""
-    
-    # Initialize selected options
+    """Display option buttons"""
     if question_idx not in st.session_state.selected_options:
         st.session_state.selected_options[question_idx] = set(current_selection)
     
-    # Create buttons in a container
     container = st.container()
     
     with container:
         for option_key, option_text in options.items():
             is_selected = option_key in st.session_state.selected_options[question_idx]
             
-            # Button styling based on selection
             button_type = "primary" if is_selected else "secondary"
             button_label = f"✓ {option_key}. {option_text}" if is_selected else f"{option_key}. {option_text}"
             
-            # Create the button
             if st.button(button_label,
-                        key=f"btn_{question_idx}_{option_key}_{is_selected}",  # Include state in key
+                        key=f"btn_{question_idx}_{option_key}_{is_selected}",
                         type=button_type,
                         use_container_width=True):
                 current = st.session_state.selected_options[question_idx]
                 
-                # Handle selection logic
                 if difficulty == "Difficult" or answer_type == "multiple":
-                    # Toggle selection
                     if option_key in current:
                         current.remove(option_key)
                     else:
                         current.add(option_key)
                 else:
-                    # Single selection
                     st.session_state.selected_options[question_idx] = {option_key}
                 
                 st.session_state.last_clicked_option = (question_idx, option_key)
@@ -610,7 +544,6 @@ st.markdown(
 # SIDEBAR: Chat History
 # -----------------------------
 with st.sidebar:
-   
     if Avatar_Icon:
         st.markdown(
             f'<img src="data:image/png;base64,{Avatar_Icon}" class="avatar-img">',
@@ -662,34 +595,29 @@ with st.sidebar:
         st.info("No chat sessions yet!")
 
 # -----------------------------
-# MAIN TABS WITH FIXED ICONS
+# MAIN TABS WITH ICONS
 # -----------------------------
 if tab_chat_icon:
     chat_icon = f"![Icon](data:image/png;base64,{tab_chat_icon}) "
-    unsafe_allow_html=True
 else:
-    chat_icon = "💬"  # Use emoji instead of base64
+    chat_icon = "💬"
 if notes_icon:
     notes_icon = f"![Icon](data:image/png;base64,{notes_icon}) "
-    unsafe_allow_html=True
 else:
     notes_icon = "📝"
 if progress_icon:
     progress_icon = f"![Icon](data:image/png;base64,{progress_icon}) "
-    unsafe_allow_html=True
 else:
     progress_icon = "📊"
 
-# Create tabs with simple emojis
 tab1, tab2, tab3 = st.tabs([
     f"{chat_icon} Chat",
     f"{notes_icon} Notes & Quiz", 
     f"{progress_icon} Progress"
 ])
 
-# ---------- TAB 1: CHAT ----------
+# ---------- TAB 1: CHAT (FIXED STREAMING) ----------
 with tab1:
-    # Update active tab
     st.session_state.active_tab = "Chat"
     
     current_msgs = get_current_session_messages()
@@ -711,7 +639,6 @@ with tab1:
                     unsafe_allow_html=True,
                 )
             else:
-                # Regular message
                 st.markdown(
                     f'<div style="text-align:left; margin:10px 0;"><div class="msg-bubble msg-bot">'
                     f"🤖 {txt}<span class='msg-time'>{tstr}</span>"
@@ -719,9 +646,21 @@ with tab1:
                     unsafe_allow_html=True,
                 )
         
-        # Show custom loader in chat when AI is responding
+        # Show streaming message if AI is responding
         if st.session_state.get("ai_responding", False):
-            st.markdown(show_custom_loader("Thinking..."), unsafe_allow_html=True)
+            # Get the current streaming message
+            streaming_text = st.session_state.get("streaming_message", "")
+            if streaming_text:
+                # Show partial response with typing indicator
+                st.markdown(
+                    f'<div style="text-align:left; margin:10px 0;"><div class="msg-bubble msg-bot">'
+                    f"🤖 {streaming_text}<span class='msg-time'>typing...</span>"
+                    f"</div></div>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                # Show only loader when no text yet
+                st.markdown(show_custom_loader("Thinking..."), unsafe_allow_html=True)
 
     # Chat input
     with st.form("chat_form", clear_on_submit=True):
@@ -731,10 +670,15 @@ with tab1:
                 "Type your message",
                 key="chat_input",
                 placeholder="Ask me anything about your studies...",
-                label_visibility="collapsed"
+                label_visibility="collapsed",
+                disabled=st.session_state.get("ai_responding", False)
             )
         with col2:
-            send_btn = st.form_submit_button("Send", use_container_width=True)
+            send_btn = st.form_submit_button(
+                "Send", 
+                use_container_width=True,
+                disabled=st.session_state.get("ai_responding", False)
+            )
         
         if send_btn and user_msg.strip():
             if not st.session_state.current_session_id:
@@ -744,13 +688,13 @@ with tab1:
             
             # Set AI responding flag
             st.session_state.ai_responding = True
+            st.session_state.streaming_message = ""
             st.session_state.last_user_message = user_msg.strip()
-            st.session_state.last_chat_messages = current_msgs
+            st.session_state.last_chat_messages = current_msgs.copy()
             
-            # Trigger response
             st.rerun()
 
-# Handle AI response after rerun
+# Handle AI response with proper streaming
 if st.session_state.get("ai_responding", False) and st.session_state.get("last_user_message"):
     try:
         # Get the streaming response
@@ -760,19 +704,42 @@ if st.session_state.get("ai_responding", False) and st.session_state.get("last_u
             st.session_state.user_id
         )
         
-        # Collect the full response
+        # Stream the response chunk by chunk
         full_response = ""
         for chunk in response_stream:
-            if hasattr(chunk, 'text'):
-                full_response += chunk.text
-            elif isinstance(chunk, str):
-                full_response += chunk
+            if chunk:
+                # Extract text from chunk
+                if hasattr(chunk, 'content'):
+                    chunk_text = chunk.content
+                elif hasattr(chunk, 'text'):
+                    chunk_text = chunk.text
+                elif isinstance(chunk, str):
+                    chunk_text = chunk
+                else:
+                    chunk_text = str(chunk)
+                
+                full_response += chunk_text
+                st.session_state.streaming_message = full_response
+                
+                # Update the display in real-time
+                # We use a placeholder to update the UI
+                with st.container():
+                    st.markdown(
+                        f'<div style="text-align:left; margin:10px 0;"><div class="msg-bubble msg-bot">'
+                        f"🤖 {full_response}<span class='msg-time'>typing...</span>"
+                        f"</div></div>",
+                        unsafe_allow_html=True,
+                    )
+                # Small delay for visual effect
+                time.sleep(0.05)
         
-        # Add the response to chat history
-        add_message_to_current_session("bot", full_response)
+        # Add the complete response to chat history
+        if full_response:
+            add_message_to_current_session("bot", full_response)
         
         # Clear streaming flags
         st.session_state.ai_responding = False
+        st.session_state.streaming_message = ""
         st.session_state.last_user_message = None
         st.session_state.last_chat_messages = None
         
@@ -788,28 +755,26 @@ if st.session_state.get("ai_responding", False) and st.session_state.get("last_u
     except Exception as e:
         # Clear streaming flags on error
         st.session_state.ai_responding = False
+        st.session_state.streaming_message = ""
         st.session_state.last_user_message = None
         st.session_state.last_chat_messages = None
         
         # Add error message
-        add_message_to_current_session("bot", f"Error: {str(e)}")
-        st.error(f"Error: {str(e)}")
+        error_msg = f"Error: {str(e)}"
+        add_message_to_current_session("bot", error_msg)
+        st.error(f"❌ {error_msg}")
         st.rerun()
 
 # ---------- TAB 2: NOTES & QUIZ ----------
 with tab2:
-    # Update active tab
     st.session_state.active_tab = "Notes & Quiz"
     
-    # FIXED ALIGNMENT: Clear separation of states using if-elif-else
+    # STATE 3: Quiz Completed
     if st.session_state.completed and st.session_state.quiz:
-        # STATE 3: Quiz Completed - Show Results
         st.markdown("---")
-        # FIXED: Removed duplicate "Quiz Results" header
         st.subheader("🎉 Quiz Results")
         
         try:
-            # Convert answers for compatibility
             answers_for_evaluation = {str(k): v for k, v in st.session_state.answers.items()}
             
             result = evaluate_quiz_attempt(
@@ -818,7 +783,7 @@ with tab2:
                 st.session_state.user_id
             )
             
-            # Score metrics with beautiful design
+            # Score metrics
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.markdown(f"""
@@ -854,11 +819,10 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # FIXED: Question Type Analysis - Using separate HTML calls
+            # Question type analysis for Difficult mode
             if st.session_state.difficulty == "Difficult":
                 st.markdown("### 🔍 Question Type Analysis")
                 
-                # Calculate question type statistics
                 single_count = 0
                 multi_count = 0
                 single_correct = 0
@@ -885,8 +849,6 @@ with tab2:
                             <p style="color: #9aa3bf;">Correct ({single_acc:.1f}%)</p>
                         </div>
                         """, unsafe_allow_html=True)
-                        
-                        # Determine scenario for single answer progress
                         scenario = "excellent" if single_acc >= 80 else "good" if single_acc >= 60 else "fair" if single_acc >= 40 else "needs_improvement"
                         st.markdown(create_gradient_progress_bar(single_acc, st.session_state.difficulty, scenario), unsafe_allow_html=True)
                     else:
@@ -907,8 +869,6 @@ with tab2:
                             <p style="color: #9aa3bf;">Correct ({multi_acc:.1f}%)</p>
                         </div>
                         """, unsafe_allow_html=True)
-                        
-                        # Determine scenario for multiple answer progress
                         scenario = "excellent" if multi_acc >= 80 else "good" if multi_acc >= 60 else "fair" if multi_acc >= 40 else "needs_improvement"
                         st.markdown(create_gradient_progress_bar(multi_acc, st.session_state.difficulty, scenario), unsafe_allow_html=True)
                     else:
@@ -921,7 +881,7 @@ with tab2:
                 
                 st.markdown("---")
             
-            # Partial credit info for multiple answer questions
+            # Partial credit info
             if result.get('partial_credit', 0) > 0:
                 st.info(f"✨ You earned **{result['partial_credit']:.1f} points** in partial credit for partially correct multiple-answer questions!")
             
@@ -931,7 +891,6 @@ with tab2:
                     with st.container():
                         st.markdown(f"**Q{i+1}:** {feedback.get('question', '')}")
                         
-                        # Show answer type
                         answer_type = feedback.get('answer_type', 'single')
                         type_label = "SINGLE ANSWER" if answer_type == 'single' else "MULTIPLE ANSWERS"
                         type_color = "#4fded8" if answer_type == 'single' else "#8a7bff"
@@ -968,7 +927,6 @@ with tab2:
             col1, col2, col3 = st.columns(3)
             with col1:
                 if st.button("🔄 Take Another Quiz", use_container_width=True):
-                    # Reset quiz state
                     st.session_state.quiz = None
                     st.session_state.completed = False
                     st.session_state.current_q = 0
@@ -980,42 +938,35 @@ with tab2:
                     st.session_state.question_status = {}
                     st.session_state.last_clicked_option = None
                     st.session_state.attempt += 1
-                    
                     st.session_state.need_rerun = True
             
             with col2:
                 if st.button("📚 Study More", use_container_width=True):
-                    # Switch to chat tab to ask questions
                     topic = st.session_state.quiz.get("topic", "this topic")
                     st.session_state.chat_input = f"Help me understand {topic} better. I scored {result['accuracy']}% on the quiz."
                     st.session_state.current_session_id = None
-                    # Set tab state for navigation
                     st.session_state.active_tab = "Chat"
                     st.rerun()
             
             with col3:
                 if st.button("📊 View Progress", use_container_width=True):
-                    # Switch to progress tab
                     st.session_state.active_tab = "Progress"
                     st.rerun()
                     
         except Exception as e:
             st.error(f"❌ Error evaluating quiz: {str(e)}")
     
+    # STATE 2: Quiz Active
     elif st.session_state.quiz and not st.session_state.completed:
-        # STATE 2: Quiz Active - Show Only Quiz
-        # Show quiz navigation header with back button
-   
         col_header1, col_header2 = st.columns([3, 1])
         with col_header1:
             if quiz_icon:
-                  quiz_icon_html = f'![quiz-icon-class](data:image/png;base64,{quiz_icon}) ' 
+                quiz_icon_html = f'![quiz-icon-class](data:image/png;base64,{quiz_icon}) '
             else:
-                 quiz_icon_html = "📝"
-        st.subheader(quiz_icon_html + "Take the Quiz")
+                quiz_icon_html = "📝"
+            st.subheader(quiz_icon_html + "Take the Quiz")
         with col_header2:
             if st.button("← Back to Setup", type="secondary", use_container_width=True):
-                # Reset quiz state
                 st.session_state.quiz = None
                 st.session_state.completed = False
                 st.session_state.current_q = 0
@@ -1030,7 +981,6 @@ with tab2:
         
         st.markdown("---")
         
-        # Display the quiz
         quiz = st.session_state.quiz.get("quiz", [])
         total = len(quiz)
         idx = st.session_state.current_q
@@ -1041,45 +991,26 @@ with tab2:
             options = q.get("options", {})
             correct_answer = q.get("answer", "").strip().upper()
             
-            # Create a two-column layout for progress bar and circle progress
             col_progress, col_circle = st.columns([2, 1])
             
             with col_progress:
-                # FIXED: Display progress indicator in separate parts
                 progress_data = create_quiz_progress_indicator(idx, total, st.session_state.difficulty)
                 
-                # Display the container
                 st.markdown('<div class="quiz-progress-container">', unsafe_allow_html=True)
-                
-                # Display header with dots legend
                 st.markdown(progress_data["header"], unsafe_allow_html=True)
-                
-                # Display multi-segment progress bar
                 st.markdown(progress_data["segment_bar"], unsafe_allow_html=True)
-                
-                # Display dots separately
                 st.markdown(progress_data["dots"], unsafe_allow_html=True)
-                
-                # Close container
                 st.markdown('</div>', unsafe_allow_html=True)
             
             with col_circle:
-                # Calculate completed questions count
                 completed_count = len([i for i in range(total) if i in st.session_state.question_answered])
-                
-                # Create circle progress bar with consistent gradient (FIXED)
                 circle_html = create_circle_progress_bar(completed_count, total, idx)
                 st.markdown(circle_html, unsafe_allow_html=True)
                 
-                # Status indicator below circle - shows progress only (FIXED)
                 if completed_count > 0:
-                    # Always use purple for consistency
-                    status_color = "#8a7bff"
-                    status_icon = "📊"
-                    
                     st.markdown(f"""
-                    <div style="text-align: center; margin-top: 10px; font-size: 12px; color: {status_color};">
-                        {status_icon} Progress: {completed_count}/{total} questions
+                    <div style="text-align: center; margin-top: 10px; font-size: 12px; color: #8a7bff;">
+                        📊 Progress: {completed_count}/{total} questions
                     </div>
                     """, unsafe_allow_html=True)
                 else:
@@ -1089,10 +1020,8 @@ with tab2:
                     </div>
                     """, unsafe_allow_html=True)
             
-            # Question box
             st.markdown("<div class='quiz-box'>", unsafe_allow_html=True)
             
-            # Display the question with mode indicator
             mode_indicator = ""
             if st.session_state.difficulty != "Difficult":
                 if answer_type == "multiple":
@@ -1110,37 +1039,26 @@ with tab2:
             <div style='font-size: 22px; font-weight: 600; margin-bottom: 25px; color: #e6eef9; line-height: 1.4;'>{q['question']}</div>
             """, unsafe_allow_html=True)
             
-            # Show instructions based on difficulty
-            if st.session_state.difficulty != "Difficult":
-                st.markdown(get_difficulty_instructions(st.session_state.difficulty, answer_type), unsafe_allow_html=True)
-            else:
-                st.markdown(get_difficulty_instructions(st.session_state.difficulty), unsafe_allow_html=True)
+            st.markdown(get_difficulty_instructions(st.session_state.difficulty, answer_type), unsafe_allow_html=True)
             
-            # Check if question has been answered
             answered = idx in st.session_state.question_answered
             show_feedback = st.session_state.show_feedback.get(idx, False)
             
             if not answered or not show_feedback:
-                # Initialize selected options for this question if not exists
                 if idx not in st.session_state.selected_options:
                     st.session_state.selected_options[idx] = set()
                 
-                # Get current selection
                 current_selection = st.session_state.selected_options[idx]
                 
-                # Show selection counter for multiple answers
                 if len(current_selection) > 0:
                     if st.session_state.difficulty == "Difficult" or answer_type == "multiple":
                         st.markdown(f"<div style='margin-bottom: 15px;'><strong>Selected:</strong> <span class='selection-counter'>{len(current_selection)} option(s)</span></div>", unsafe_allow_html=True)
                 
-                # Display beautifully styled option buttons (same as feedback cards)
                 display_option_buttons(idx, options, current_selection, answer_type, st.session_state.difficulty)
                 
-                # Submit button with smaller size
                 current_selection = st.session_state.selected_options.get(idx, set())
                 submit_disabled = len(current_selection) == 0
                 
-                # Modern submit button with smaller size
                 submit_col1, submit_col2, submit_col3 = st.columns([1, 2, 1])
                 with submit_col2:
                     submit_label = "✅ Submit Answer & See Result"
@@ -1155,25 +1073,19 @@ with tab2:
                     )
                     
                     if submit_btn:
-                        # Store the answer
                         if current_selection:
                             if answer_type == "single":
                                 st.session_state.answers[idx] = list(current_selection)[0].upper()
                             else:
                                 st.session_state.answers[idx] = ",".join(sorted([opt.upper() for opt in list(current_selection)]))
                         
-                        # Show feedback for ALL modes
                         submit_answer(idx, answer_type, show_feedback=True)
-                        
-                        # Set rerun flag
                         st.session_state.need_rerun = True
             
-            # Show feedback for ALL answered questions (ALL modes including Difficult)
             elif answered and show_feedback:
                 st.markdown("---")
                 user_answer = st.session_state.answers.get(idx, "")
                 
-                # Different header based on difficulty
                 if st.session_state.difficulty == "Difficult":
                     st.markdown("### 🎯 Difficult Mode Result:")
                     st.markdown(f"""
@@ -1187,46 +1099,43 @@ with tab2:
                 else:
                     st.markdown("### 📊 Your Result:")
                 
-                # Display options with card-based feedback - One option per line
                 st.markdown('<div class="option-grid">', unsafe_allow_html=True)
                 
                 for option_key, option_text in options.items():
                     option_upper = option_key.upper()
                     css_class = "option-card-interactive"
-                    icon = option_key  # Default to option letter
+                    icon = option_key
                     
                     if answer_type == "single":
                         if option_upper == correct_answer:
-                            css_class += " correct"  # Correct answer (always show in green)
+                            css_class += " correct"
                             icon = "✅"
                             hint = "Correct Answer"
                         elif option_upper == user_answer.upper():
-                            css_class += " wrong"    # User selected wrong answer
+                            css_class += " wrong"
                             icon = "❌"
                             hint = "Your Selection (Incorrect)"
                         else:
                             hint = "Not Selected"
                     else:
-                        # Multiple answer question
                         user_answers_set = set([ans.strip().upper() for ans in user_answer.split(",")]) if user_answer else set()
                         correct_answers_set = set([ans.strip().upper() for ans in correct_answer.split(",")])
                         
                         if option_upper in correct_answers_set and option_upper in user_answers_set:
-                            css_class += " correct"  # Correctly selected
+                            css_class += " correct"
                             icon = "✅"
                             hint = "Correct (You selected this)"
                         elif option_upper in correct_answers_set and option_upper not in user_answers_set:
-                            css_class += " wrong"    # Missed correct answer
+                            css_class += " wrong"
                             icon = "⚠️"
                             hint = "Correct Answer (You missed this)"
                         elif option_upper not in correct_answers_set and option_upper in user_answers_set:
-                            css_class += " wrong"    # Incorrectly selected
+                            css_class += " wrong"
                             icon = "❌"
                             hint = "Incorrect (You selected this)"
                         else:
                             hint = "Not Selected"
                     
-                    # Create visual feedback card
                     st.markdown(f"""
                     <div class="{css_class}">
                         <div style="display: flex; align-items: center;">
@@ -1241,7 +1150,6 @@ with tab2:
                 
                 st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Show summary message
                 if answer_type == "single":
                     if user_answer.upper() == correct_answer:
                         st.success("### ✅ **Correct!** Well done!")
@@ -1272,12 +1180,10 @@ with tab2:
                             st.info(f"**Correct answers:** {', '.join(sorted(correct_answers_set))}")
                             st.session_state.question_status[idx] = "incorrect"
                 
-                # Show explanation if available
                 if q.get('explanation'):
                     with st.expander("📖 Explanation", expanded=True):
                         st.info(q['explanation'])
                 
-                # Navigation buttons with smaller size
                 st.markdown("<div class='nav-btn-container'>", unsafe_allow_html=True)
                 
                 col1, col2 = st.columns(2)
@@ -1301,11 +1207,10 @@ with tab2:
             
             st.markdown("</div>", unsafe_allow_html=True)
     
+    # STATE 1: No Quiz - Setup
     else:
-        # STATE 1: No Quiz - Show Setup Interface
         st.subheader("📘 Upload Notes or Enter Topic for Quiz")
         
-        # Quiz configuration
         col1, col2, col3 = st.columns(3)
         with col1:
             st.session_state.quiz_source = st.radio(
@@ -1320,7 +1225,6 @@ with tab2:
         with col3:
             st.session_state.num_questions = st.selectbox("Questions:", [5, 10, 15])
         
-        # Show warning for Difficult level
         if st.session_state.difficulty == "Difficult":
             st.markdown(
                 '<div class="difficult-warning-box">'
@@ -1332,11 +1236,9 @@ with tab2:
         
         st.markdown("---")
         
-        # Notes upload or topic input
         if st.session_state.quiz_source == "Notes":
             st.info("📤 Upload your study notes (PDF, DOCX, or TXT)")
             
-            # File uploader
             uploaded_file = st.file_uploader(
                 "Choose a file",
                 type=["pdf", "docx", "txt"],
@@ -1345,14 +1247,11 @@ with tab2:
             )
             
             if uploaded_file is not None:
-                # Clear previous notes if new file is uploaded
                 if uploaded_file != st.session_state.get("uploaded_file"):
                     st.session_state.notes_text = ""
                     st.session_state.uploaded_file = uploaded_file
                 
-                # Extract text from file
                 if not st.session_state.notes_text:
-                    # Show custom loader for text extraction with reduced gap
                     loader_placeholder = st.empty()
                     with loader_placeholder.container():
                         st.markdown(show_custom_loader(f"Extracting text from {uploaded_file.name}..."), unsafe_allow_html=True)
@@ -1364,12 +1263,11 @@ with tab2:
                     
                     try:
                         st.session_state.notes_text = extract_text(temp_path)
-                        loader_placeholder.empty()  # Clear loader
+                        loader_placeholder.empty()
                         
                         if st.session_state.notes_text:
                             st.success(f"✅ Successfully extracted {len(st.session_state.notes_text)} characters from {uploaded_file.name}")
                             
-                            # Show preview
                             with st.expander("📄 Preview extracted notes", expanded=True):
                                 preview_text = st.session_state.notes_text[:1500]
                                 if len(st.session_state.notes_text) > 1500:
@@ -1382,9 +1280,9 @@ with tab2:
                                     label_visibility="collapsed"
                                 )
                             
-                            # Store notes in vector database
                             try:
-                                store_notes_and_progress(
+                                from Notes_Quiz_Section import store_notes_and_quizzes
+                                store_notes_and_quizzes(
                                     user_id=st.session_state.user_id,
                                     notes_text=st.session_state.notes_text
                                 )
@@ -1393,7 +1291,7 @@ with tab2:
                                 st.warning(f"Note: Could not save to database: {str(e)}")
                                 
                     except Exception as e:
-                        loader_placeholder.empty()  # Clear loader on error
+                        loader_placeholder.empty()
                         st.error(f"❌ Error extracting text: {str(e)}")
                     finally:
                         try:
@@ -1401,7 +1299,6 @@ with tab2:
                         except:
                             pass
                 else:
-                    # Show already extracted notes
                     st.success(f"✅ Notes already extracted from {uploaded_file.name}")
                     
                     with st.expander("📄 View extracted notes", expanded=False):
@@ -1417,7 +1314,6 @@ with tab2:
                         )
             
             else:
-                # No file uploaded yet
                 st.markdown("""
                 <div style="text-align: center; padding: 40px; border: 2px dashed rgba(255,255,255,0.1); border-radius: 12px; margin: 20px 0;">
                     <h3 style="color: #8a7bff;">📤 Upload Your Notes</h3>
@@ -1426,7 +1322,7 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
         
-        else:  # Topic mode
+        else:
             st.info("🎯 Enter a topic to generate a quiz")
             
             st.session_state.custom_topic = st.text_input(
@@ -1441,13 +1337,12 @@ with tab2:
                 <div style="padding: 15px; background: rgba(138, 123, 255, 0.1); border-radius: 8px; margin: 10px 0;">
                     <strong>Topic:</strong> {st.session_state.custom_topic}<br>
                     <small style="color: #9aa3bf;">Will generate {st.session_state.num_questions} {st.session_state.difficulty.lower()} questions</small>
-                    {"<br><small style='color: #ff6b6b;'>⚠️ Difficult mode: Question types hidden until submission</small>" if st.session_state.difficulty == "Difficult" else ""}
+                    {"<br><small style='color: #ff6b6d;'>⚠️ Difficult mode: Question types hidden until submission</small>" if st.session_state.difficulty == "Difficult" else ""}
                 </div>
                 """, unsafe_allow_html=True)
         
         st.markdown("---")
         
-        # Generate quiz button with loader placeholder above it
         generate_disabled = False
         generate_tooltip = ""
         
@@ -1455,12 +1350,11 @@ with tab2:
             if not st.session_state.notes_text:
                 generate_disabled = True
                 generate_tooltip = "Please upload and extract notes first"
-        else:  # Topic mode
+        else:
             if not st.session_state.custom_topic or not st.session_state.custom_topic.strip():
                 generate_disabled = True
                 generate_tooltip = "Please enter a topic first"
         
-        # Loader placeholder for quiz generation
         quiz_loader_placeholder = st.empty()
         
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -1474,13 +1368,11 @@ with tab2:
             )
         
         if generate_clicked:
-            # Show custom loader for quiz generation with reduced gap
             with quiz_loader_placeholder.container():
                 loader_text = f"Generating {st.session_state.num_questions} {st.session_state.difficulty} questions..."
                 st.markdown(show_custom_loader(loader_text), unsafe_allow_html=True)
             
             try:
-                # Prepare input text
                 if st.session_state.quiz_source == "Notes":
                     input_text = st.session_state.notes_text
                     source_desc = "from your notes"
@@ -1488,7 +1380,6 @@ with tab2:
                     input_text = st.session_state.custom_topic
                     source_desc = f"about {st.session_state.custom_topic}"
                 
-                # Generate quiz
                 quiz_data = generate_quiz_from_notes(
                     notes_text=input_text,
                     user_id=st.session_state.user_id,
@@ -1496,7 +1387,7 @@ with tab2:
                     difficulty=st.session_state.difficulty.lower(),
                 )
                 
-                quiz_loader_placeholder.empty()  # Clear loader
+                quiz_loader_placeholder.empty()
                 
                 if quiz_data and quiz_data.get("quiz"):
                     st.session_state.quiz = quiz_data
@@ -1512,7 +1403,6 @@ with tab2:
                     
                     st.success(f"✅ Successfully generated {len(quiz_data['quiz'])} questions {source_desc}!")
                     
-                    # Show quiz statistics
                     single_count = sum(1 for q in quiz_data['quiz'] if q.get('answer_type') == 'single')
                     multi_count = sum(1 for q in quiz_data['quiz'] if q.get('answer_type') == 'multiple')
                     
@@ -1527,18 +1417,16 @@ with tab2:
                     st.error("❌ Failed to generate quiz. Please try again with different content.")
                     
             except Exception as e:
-                quiz_loader_placeholder.empty()  # Clear loader on error
+                quiz_loader_placeholder.empty()
                 st.error(f"❌ Error generating quiz: {str(e)}")
 
 # ---------- TAB 3: PROGRESS ----------
 with tab3:
-    # Update active tab
     st.session_state.active_tab = "Progress"
     
     st.subheader("📈 Your Learning Progress")
     
     if st.button("🔄 Refresh Progress", use_container_width=True, type="primary"):
-        # Show custom loader for progress refresh with reduced gap
         loader_placeholder = st.empty()
         with loader_placeholder.container():
             st.markdown(show_custom_loader("Refreshing progress..."), unsafe_allow_html=True)
@@ -1546,7 +1434,7 @@ with tab3:
         try:
             st.rerun()
         finally:
-            loader_placeholder.empty()  # Clear loader
+            loader_placeholder.empty()
     
     try:
         data = fetch_progress_from_pinecone(st.session_state.user_id)
@@ -1556,17 +1444,14 @@ with tab3:
             progress_list = data.get("progress", [])
             
             if report_icon:
-                report_icon = f'<img src="data:image/png;base64,{report_icon}" class="report-icon"> '
-                unsafe_allow_html=True
+                report_icon_html = f'<img src="data:image/png;base64,{report_icon}" class="report-icon"> '
             else:
-                report_icon= "📊 "
-            # Summary metrics with beautiful design - ALL EQUALLY SIZED
-            st.markdown(f"### {report_icon} Overall Statistics", unsafe_allow_html=True)
+                report_icon_html = "📊 "
             
-            # Use equal columns for all metrics
+            st.markdown(f"### {report_icon_html} Overall Statistics", unsafe_allow_html=True)
+            
             col1, col2, col3, col4 = st.columns(4)
             
-            # Total Attempts
             with col1:
                 total_attempts = summary.get("total_attempts", 0)
                 st.markdown(f"""
@@ -1578,12 +1463,11 @@ with tab3:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Average Score
             with col2:
                 avg_score = summary.get('average_score', 0)
                 scenario = "excellent" if avg_score >= 80 else "good" if avg_score >= 60 else "fair" if avg_score >= 40 else "needs_improvement"
                 if target_icon:
-                    target_icon_html = f'<img src="data:image/png;base64,{target_icon}"'
+                    target_icon_html = f'<img src="data:image/png;base64,{target_icon}" class="target-icon"> '
                 else:
                     target_icon_html = "🎯 "
                 st.markdown(f"""
@@ -1596,7 +1480,6 @@ with tab3:
                 """, unsafe_allow_html=True)
                 st.markdown(create_gradient_progress_bar(avg_score, "medium", scenario), unsafe_allow_html=True)
             
-            # Average Accuracy
             with col3:
                 avg_acc = summary.get('average_accuracy', 0)
                 scenario = "excellent" if avg_acc >= 80 else "good" if avg_acc >= 60 else "fair" if avg_acc >= 40 else "needs_improvement"
@@ -1610,7 +1493,6 @@ with tab3:
                 """, unsafe_allow_html=True)
                 st.markdown(create_gradient_progress_bar(avg_acc, "hard", scenario), unsafe_allow_html=True)
             
-            # Topics Covered
             with col4:
                 topics = summary.get("topics_covered", [])
                 topic_count = len(topics)
@@ -1632,7 +1514,6 @@ with tab3:
             
             st.markdown("---")
             
-            # Topics covered in a grid
             if topics:
                 st.subheader("📚 Topics You've Studied")
                 cols = st.columns(3)
@@ -1645,18 +1526,15 @@ with tab3:
                         </div>
                         """, unsafe_allow_html=True)
             
-            # Progress chart
             st.subheader("📋 Attempt History")
             
             for i, attempt in enumerate(progress_list[:10]):
                 accuracy = attempt.get('accuracy', 0)
                 score = attempt.get('score', 0)
                 total = attempt.get('total', 1)
-                calendar_icon_html = "",
                 if Calendar_Icon:
-                    calendar_icon_html = f'![calendar-icon-class](data:image/png;base64,{Calendar_Icon}) ' 
-                    
-                    
+                   # Use HTML image tag with inline styles for precise control
+                    calendar_icon_html = f'<img src="data:image/png;base64,{Calendar_Icon}" style="width: 20px; height: 20px; object-fit: contain; vertical-align: middle; display: inline-block; margin-right: 6px;">'
                 else:
                     calendar_icon_html = "📅 "
                 
@@ -1668,13 +1546,11 @@ with tab3:
                         st.write(f"**Source:** {attempt.get('source', 'Unknown')}")
                         
                     with col2:
-                        # Progress bar for accuracy with scenario-based gradient
                         st.markdown("**Accuracy:**")
                         scenario = "excellent" if accuracy >= 80 else "good" if accuracy >= 60 else "fair" if accuracy >= 40 else "needs_improvement"
                         difficulty = attempt.get('difficulty', 'medium').lower()
                         st.markdown(create_gradient_progress_bar(accuracy, difficulty, scenario), unsafe_allow_html=True)
                         
-                        # Show question type breakdown if available
                         single_correct = 0
                         single_total = 0
                         multi_correct = 0

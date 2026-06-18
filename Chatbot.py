@@ -39,7 +39,7 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
 if not GEMINI_API_KEY:
@@ -305,7 +305,7 @@ def fetch_chat_history(user_id: str, user_timezone=None):
 # ---------------- IMPROVED WIKIPEDIA TOOL ----------------
 @tool
 def search_wikipedia(query: str) -> str:
-    """Search Wikipedia for information about a topic."""
+    """Search Wikipedia for information about a topic. Use this for encyclopedia knowledge."""
     try:
         # Try using wikipedia library first
         try:
@@ -314,9 +314,8 @@ def search_wikipedia(query: str) -> str:
                 return f"No Wikipedia articles found for '{query}'"
             page = wikipedia.page(search_results[0])
             return f"📚 Wikipedia: {page.title}\n\n{page.summary[:600]}...\n\n🔗 {page.url}"
-        except json.JSONDecodeError:
+        except:
             # Fallback: Use direct API request
-            import requests
             url = "https://en.wikipedia.org/w/api.php"
             params = {
                 "action": "query",
@@ -355,24 +354,16 @@ def search_wikipedia(query: str) -> str:
         return f"No page found for '{query}'"
     except Exception as e:
         print(f"[WARNING] Wikipedia error: {e}")
-        # Last fallback: Try simple API
-        try:
-            import requests
-            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}"
-            response = requests.get(url, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if "title" in data and "extract" in data:
-                    return f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:600]}...\n\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
-        except:
-            pass
         return f"Error searching Wikipedia for '{query}'. Please try again."
 
 # ---------------- IMPROVED TAVILY TOOL ----------------
 @tool 
 def web_search(query: str) -> str:
-    """Performs a web search using Tavily and returns the top results."""
+    """Performs a web search using Tavily and returns the top results. Use this for current news and real-time information."""
     try:
+        if not TAVILY_API_KEY:
+            return "Tavily API key not configured. Please set TAVILY_API_KEY in .env file."
+        
         client = TavilyClient(api_key=TAVILY_API_KEY)
         response = client.search(
             query=query,
@@ -392,11 +383,11 @@ def web_search(query: str) -> str:
                     formatted_results.append(f"{i}. **{title}**\n   {content}...\n   🔗 {url}")
                 return f"🌐 Web Search Results:\n\n" + "\n\n".join(formatted_results)
         
-        return str(response)
+        return "No web search results found for your query."
     except Exception as e:
         return f"Error performing web search: {str(e)}"
 
-# ---------------- MAIN CHATBOT FUNCTION ----------------
+# ---------------- MAIN CHATBOT FUNCTION (FIXED) ----------------
 def get_gemini_response(user_input: str, history: list = None, user_id: str = None) -> Generator[str, None, None]:
     """StudyBuddy with RAG + Wikipedia + Tavily using LangChain Agent."""
     try:
@@ -407,10 +398,9 @@ Guidelines:
 1. Use the available tools to look up information when needed
 2. You can make multiple tool calls (either together or in sequence)
 3. Only look up information when you are sure of what you want
-4. If you need to look up information before asking a follow-up question, you are allowed to do that
-5. Always cite your sources when using tools
-6. Be helpful, educational, and encouraging
-7. When you get tool results, summarize them clearly for the user
+4. Always cite your sources when using tools
+5. Be helpful, educational, and encouraging
+6. When you get tool results, summarize them clearly for the user
 
 Available tools:
 - search_notes: Search the user's personal notes/documents
@@ -419,7 +409,7 @@ Available tools:
 
 Remember: You are a tutor helping students learn, so explain concepts clearly and ask follow-up questions when appropriate."""
 
-        # Initialize LLM
+        # Use Llama 4 Scout (available and has good tool support)
         llm = ChatGroq(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.3,
@@ -440,7 +430,7 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
 
         tools = [search_notes, search_wikipedia, web_search]
 
-        # Create agent
+        # Create agent with tools
         agent = create_agent(
             model=llm,
             tools=tools,
@@ -471,33 +461,61 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             }
         }
         
-        for chunk in agent.stream(
-            input_state, 
-            stream_mode="values",
-            config=config
-        ):
-            last_msg = chunk["messages"][-1]
+        # Try streaming with agent
+        try:
+            for chunk in agent.stream(
+                input_state, 
+                stream_mode="values",
+                config=config
+            ):
+                last_msg = chunk["messages"][-1]
+                
+                # Debug: Show tool usage
+                if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                    print(f"\n🔧 Using tools:")
+                    for tool_call in last_msg.tool_calls:
+                        print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
+                
+                # Yield response
+                if hasattr(last_msg, 'content') and last_msg.content:
+                    yield last_msg.content
+                    
+        except Exception as stream_error:
+            print(f"[WARNING] Agent streaming failed: {stream_error}")
+            print("[INFO] Falling back to direct response...")
             
-            # Debug: Show tool usage
-            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                print(f"\n🔧 Using tools:")
-                for tool_call in last_msg.tool_calls:
-                    print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
+            # Fallback: Direct response without tools
+            # Get context from notes
+            context = retrieve_context(user_input, user_id, top_k=3)
             
-            # Yield response
-            if hasattr(last_msg, 'content') and last_msg.content:
-                yield last_msg.content
+            # Use a simpler model for fallback
+            fallback_llm = ChatGroq(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                temperature=0.5,
+                groq_api_key=GROQ_API_KEY
+            )
+            
+            fallback_prompt = f"""You are StudyBuddy, a helpful tutor. Answer the user's question based on the context.
+
+Context from notes:
+{context if context else "No context available"}
+
+User question: {user_input}
+
+Provide a clear, educational response. If the question is about current events, suggest using the web search feature for the most current information."""
+            
+            response = fallback_llm.invoke(fallback_prompt)
+            yield response.content
 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
         import traceback
         traceback.print_exc()
-        yield f"Sorry, I encountered an error: {str(e)}"
-
+        
+        # Ultimate fallback: Simple response
+        yield f"I'm having trouble processing your request. Please try again or rephrase your question. Error: {str(e)}"
 
 # ---------------- COMPATIBILITY WRAPPER ----------------
 def get_studybuddy_response(user_input: str, history: list = None, user_id: str = None):
     """Alias for get_gemini_response"""
     return get_gemini_response(user_input, history, user_id)
-
-
