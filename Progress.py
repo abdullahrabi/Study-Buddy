@@ -4,7 +4,6 @@ import time
 import re
 import random
 from datetime import datetime
-from turtle import st
 from typing import List, Dict, Any, Generator
 from dotenv import load_dotenv
 from google import genai
@@ -12,7 +11,6 @@ from google.genai import types
 from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
-import serpapi  # For enhanced search capabilities
 import langgraph  # For agentic capabilities and tool usage
 import langchain  # For potential future use in chaining LLM calls and tools
 from langgraph.graph import StateGraph, END
@@ -27,7 +25,6 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
@@ -35,8 +32,7 @@ if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
 if not PINECONE_API_KEY:
     raise ValueError("❌ PINECONE_API_KEY not found!")
-if not SERPAPI_KEY:
-    raise ValueError("❌ SERPAPI_KEY not found!")
+
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
 # Initialize Gemini client with latest google-genai SDK
