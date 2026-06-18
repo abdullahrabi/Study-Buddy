@@ -17,7 +17,6 @@ from langgraph.graph import StateGraph, END
 from typing import TypedDict, Annotated
 import operator
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
 import wikipedia
 # ---------------- LOAD ENV VARIABLES ----------------
