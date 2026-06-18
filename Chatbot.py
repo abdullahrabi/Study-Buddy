@@ -12,7 +12,6 @@ from google.genai import types
 from pinecone import Pinecone, ServerlessSpec
 import fitz  # PyMuPDF
 import docx2txt  # Word extraction
-import serpapi  # For enhanced search capabilities
 import langgraph  # For agentic capabilities and tool usage
 import langchain  # For potential future use in chaining LLM calls and tools
 from langgraph.graph import StateGraph, END
@@ -21,6 +20,7 @@ import operator
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.tools import tool
+from tavily import TavilyClient
 import wikipedia
 # ---------------- TIMEZONE SUPPORT ----------------
 try:
