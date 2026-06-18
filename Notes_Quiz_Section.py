@@ -34,7 +34,6 @@ load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east1-gcp")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
@@ -43,8 +42,7 @@ if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
 if not PINECONE_API_KEY:
     raise ValueError("❌ PINECONE_API_KEY not found!")
-if not SERPAPI_KEY:
-    raise ValueError("❌ SERPAPI_KEY not found!")
+
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
 # Initialize Gemini client with latest google-genai SDK
