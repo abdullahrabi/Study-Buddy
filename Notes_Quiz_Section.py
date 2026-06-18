@@ -19,7 +19,6 @@ import operator
 from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_groq import ChatGroq
-from typer import prompt
 import wikipedia
 
 # ---------------- TIMEZONE SUPPORT ----------------
