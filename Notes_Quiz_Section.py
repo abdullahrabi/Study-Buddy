@@ -4,7 +4,6 @@ import time
 import re
 import random
 from datetime import datetime
-from turtle import st
 from typing import List, Dict, Any, Generator
 from dotenv import load_dotenv
 from google import genai
