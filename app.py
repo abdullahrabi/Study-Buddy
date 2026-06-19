@@ -584,7 +584,7 @@ with st.sidebar:
 
         st.markdown("</div>", unsafe_allow_html=True)
         if bin_icon:
-            bin_icon= f"![Icon](data:image/png;base64,{bin_icon}) "
+            bin_icon= f'![bin_icon-class](data:image/png;base64,{bin_icon})'
         else:
             bin_icon= "🗑️"
         if st.button(f"{bin_icon} Clear All Chats", use_container_width=True, type="secondary"):

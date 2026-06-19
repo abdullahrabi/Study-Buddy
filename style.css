@@ -1409,20 +1409,32 @@ div[data-testid="stButton"] > button[kind="primary"] {
 
 /* More specific - targets only images with this alt text */
 img[alt="search_icon-class"] {
-    width: 30px !important;
-    height: 30px !important;
-    min-width: 20px !important;
-    min-height: 20px !important;
-    max-width: 20px !important;
-    max-height: 20px !important;
+    width: 35px !important;
+    height: 35px !important;
+    min-width: 35px !important;
+    min-height: 35px !important;
+    max-width: 35px !important;
+    max-height: 35px !important;
     display: inline-block !important;
     vertical-align: middle !important;
     object-fit: contain !important;
-    margin-right: 8px !important;
+    margin-top: 5px !important;
 }
 
 
-
+/* More specific - targets only images with this alt text */
+img[alt="bin_icon-class"] {
+    width: 35px !important;
+    height: 35px !important;
+    min-width: 35px !important;
+    min-height: 35px !important;
+    max-width: 35px !important;
+    max-height: 35px !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
+    object-fit: contain !important;
+    margin-bottom: 5px !important;
+}
 
 
 
