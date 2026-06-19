@@ -616,15 +616,63 @@ tab1, tab2, tab3 = st.tabs([
     f"{progress_icon} Progress"
 ])
 
-# ---------- TAB 1: CHAT (FIXED STREAMING) ----------
+# ---------- TAB 1: CHAT (WITH AUTO-SCROLL ON RERUN) ----------
 with tab1:
     st.session_state.active_tab = "Chat"
     
+    # 🔥 SIMPLE AUTO-SCROLL - RUNS ON EVERY RERUN
+    def scroll_to_bottom():
+        """Simple scroll to bottom function that runs on each rerun"""
+        scroll_js = """
+        <script>
+        // Simple scroll function
+        function scrollToBottom() {
+            // Find the main scrollable container
+            const container = document.querySelector('[data-testid="stVerticalBlock"]');
+            if (container) {
+                container.scrollTop = container.scrollHeight;
+                container.scrollTo({
+                    top: container.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }
+            
+            // Also scroll the app container
+            const appContainer = document.querySelector('[data-testid="stAppViewContainer"]');
+            if (appContainer) {
+                appContainer.scrollTop = appContainer.scrollHeight;
+                appContainer.scrollTo({
+                    top: appContainer.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }
+            
+            // Window scroll as backup
+            window.scrollTo({
+                top: document.body.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+        
+        // Scroll immediately when page loads
+        scrollToBottom();
+        
+        // Scroll after small delays to catch late-rendering content
+        setTimeout(scrollToBottom, 100);
+        setTimeout(scrollToBottom, 300);
+        setTimeout(scrollToBottom, 500);
+        setTimeout(scrollToBottom, 1000);
+        </script>
+        """
+        st.markdown(scroll_js, unsafe_allow_html=True)
+    
+    # Display chat messages at the top
     current_msgs = get_current_session_messages()
     
-    # Display chat messages
+    # Container for all chat messages and streaming
     chat_container = st.container()
     with chat_container:
+        # Display all existing messages
         for item in current_msgs:
             role = item["role"]
             txt = item["message"]
@@ -646,125 +694,109 @@ with tab1:
                     unsafe_allow_html=True,
                 )
         
-        # Show streaming message if AI is responding
-        if st.session_state.get("ai_responding", False):
-            # Get the current streaming message
-            streaming_text = st.session_state.get("streaming_message", "")
-            if streaming_text:
-                # Show partial response with typing indicator
-                st.markdown(
-                    f'<div style="text-align:left; margin:10px 0;"><div class="msg-bubble msg-bot">'
-                    f"🤖 {streaming_text}<span class='msg-time'>typing...</span>"
-                    f"</div></div>",
-                    unsafe_allow_html=True,
+        # 🔥 TRIGGER AUTO-SCROLL AFTER DISPLAYING MESSAGES
+        scroll_to_bottom()
+        
+        # 🔥 HANDLE STREAMING RESPONSE
+        if st.session_state.get("ai_responding", False) and st.session_state.get("last_user_message"):
+            try:
+                # Get the streaming response
+                response_stream = get_gemini_response(
+                    st.session_state.last_user_message, 
+                    st.session_state.last_chat_messages, 
+                    st.session_state.user_id
                 )
-            else:
-                # Show only loader when no text yet
-                st.markdown(show_custom_loader("Thinking..."), unsafe_allow_html=True)
-
-    # Chat input
-    with st.form("chat_form", clear_on_submit=True):
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            user_msg = st.text_input(
-                "Type your message",
-                key="chat_input",
-                placeholder="Ask me anything about your studies...",
-                label_visibility="collapsed",
-                disabled=st.session_state.get("ai_responding", False)
-            )
-        with col2:
-            send_btn = st.form_submit_button(
-                "Send", 
-                use_container_width=True,
-                disabled=st.session_state.get("ai_responding", False)
-            )
-        
-        if send_btn and user_msg.strip():
-            if not st.session_state.current_session_id:
-                create_new_chat_session(user_msg.strip())
-            else:
-                add_message_to_current_session("user", user_msg.strip())
-            
-            # Set AI responding flag
-            st.session_state.ai_responding = True
-            st.session_state.streaming_message = ""
-            st.session_state.last_user_message = user_msg.strip()
-            st.session_state.last_chat_messages = current_msgs.copy()
-            
-            st.rerun()
-
-# Handle AI response with proper streaming
-if st.session_state.get("ai_responding", False) and st.session_state.get("last_user_message"):
-    try:
-        # Get the streaming response
-        response_stream = get_gemini_response(
-            st.session_state.last_user_message, 
-            st.session_state.last_chat_messages, 
-            st.session_state.user_id
-        )
-        
-        # Stream the response chunk by chunk
-        full_response = ""
-        for chunk in response_stream:
-            if chunk:
-                # Extract text from chunk
-                if hasattr(chunk, 'content'):
-                    chunk_text = chunk.content
-                elif hasattr(chunk, 'text'):
-                    chunk_text = chunk.text
-                elif isinstance(chunk, str):
-                    chunk_text = chunk
-                else:
-                    chunk_text = str(chunk)
                 
-                full_response += chunk_text
-                st.session_state.streaming_message = full_response
+                # Create a generator that yields chunks
+                def response_generator():
+                    full_response = ""
+                    for chunk in response_stream:
+                        if chunk:
+                            # Extract text from chunk
+                            if hasattr(chunk, 'content'):
+                                chunk_text = chunk.content
+                            elif hasattr(chunk, 'text'):
+                                chunk_text = chunk.text
+                            elif isinstance(chunk, str):
+                                chunk_text = chunk
+                            else:
+                                chunk_text = str(chunk)
+                            
+                            full_response += chunk_text
+                            # Store in session state for display
+                            st.session_state.streaming_message = full_response
+                            yield chunk_text
+                            time.sleep(0.05)
+                    
+                    # Store the full response for later
+                    st.session_state._full_response = full_response
                 
-                # Update the display in real-time
-                # We use a placeholder to update the UI
-                with st.container():
-                    st.markdown(
-                        f'<div style="text-align:left; margin:10px 0;"><div class="msg-bubble msg-bot">'
-                        f"🤖 {full_response}<span class='msg-time'>typing...</span>"
-                        f"</div></div>",
-                        unsafe_allow_html=True,
-                    )
-                # Small delay for visual effect
-                time.sleep(0.05)
+                # 🔥 st.write_stream RENDERS INSIDE CHAT CONTAINER
+                st.write_stream(response_generator)
+                
+                # 🔥 SCROLL AFTER STREAMING COMPLETES
+                scroll_to_bottom()
+                
+                # Get the full response from session state
+                full_response = st.session_state.get('_full_response', '')
+                
+                # Add the complete response to chat history
+                if full_response:
+                    add_message_to_current_session("bot", full_response)
+                
+                # Clear streaming flags
+                st.session_state.ai_responding = False
+                st.session_state.streaming_message = ""
+                st.session_state.last_user_message = None
+                st.session_state.last_chat_messages = None
+                st.session_state._full_response = ""
+                
+                # Save to history
+                try:
+                    save_chat_history(st.session_state.user_id, get_current_session_messages())
+                except:
+                    pass
+                
+                # Final rerun to update the UI
+                st.rerun()
+                
+            except Exception as e:
+                # Clear streaming flags on error
+                st.session_state.ai_responding = False
+                st.session_state.streaming_message = ""
+                st.session_state.last_user_message = None
+                st.session_state.last_chat_messages = None
+                st.session_state._full_response = ""
+                
+                # Add error message
+                error_msg = f"Error: {str(e)}"
+                add_message_to_current_session("bot", error_msg)
+                st.error(f"❌ {error_msg}")
+                st.rerun()
+    
+    # 🔥 CHANGED: Using st.chat_input instead of form
+    user_msg = st.chat_input(
+        "Ask me anything about your studies...",
+        disabled=st.session_state.get("ai_responding", False),
+        key="chat_input_native"
+    )
+    
+    if user_msg:
+        if not st.session_state.current_session_id:
+            create_new_chat_session(user_msg)
+        else:
+            add_message_to_current_session("user", user_msg)
         
-        # Add the complete response to chat history
-        if full_response:
-            add_message_to_current_session("bot", full_response)
-        
-        # Clear streaming flags
-        st.session_state.ai_responding = False
+        # Set AI responding flag
+        st.session_state.ai_responding = True
         st.session_state.streaming_message = ""
-        st.session_state.last_user_message = None
-        st.session_state.last_chat_messages = None
+        st.session_state.last_user_message = user_msg
+        st.session_state.last_chat_messages = get_current_session_messages().copy()
         
-        # Save to history
-        try:
-            save_chat_history(st.session_state.user_id, get_current_session_messages())
-        except:
-            pass
-        
-        # Rerun to update the UI
         st.rerun()
-        
-    except Exception as e:
-        # Clear streaming flags on error
-        st.session_state.ai_responding = False
-        st.session_state.streaming_message = ""
-        st.session_state.last_user_message = None
-        st.session_state.last_chat_messages = None
-        
-        # Add error message
-        error_msg = f"Error: {str(e)}"
-        add_message_to_current_session("bot", error_msg)
-        st.error(f"❌ {error_msg}")
-        st.rerun()
-
+    
+    # 🔥 EXTRA SCROLL AFTER CHAT INPUT (runs on every rerun)
+    scroll_to_bottom()
 # ---------- TAB 2: NOTES & QUIZ ----------
 with tab2:
     st.session_state.active_tab = "Notes & Quiz"
