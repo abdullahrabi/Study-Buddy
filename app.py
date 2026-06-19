@@ -1467,7 +1467,7 @@ with tab3:
                 avg_score = summary.get('average_score', 0)
                 scenario = "excellent" if avg_score >= 80 else "good" if avg_score >= 60 else "fair" if avg_score >= 40 else "needs_improvement"
                 if target_icon:
-                    target_icon_html = f'<img src="data:image/png;base64,{target_icon}" class="target-icon"> '
+                     target_icon_html = f'<img src="data:image/png;base64,{target_icon}"'
                 else:
                     target_icon_html = "🎯 "
                 st.markdown(f"""
@@ -1533,8 +1533,9 @@ with tab3:
                 score = attempt.get('score', 0)
                 total = attempt.get('total', 1)
                 if Calendar_Icon:
-                   # Use HTML image tag with inline styles for precise control
-                    calendar_icon_html = f'<img src="data:image/png;base64,{Calendar_Icon}" style="width: 20px; height: 20px; object-fit: contain; vertical-align: middle; display: inline-block; margin-right: 6px;">'
+                     calendar_icon_html = f'![calendar-icon-class](data:image/png;base64,{Calendar_Icon}) ' 
+                    
+                    
                 else:
                     calendar_icon_html = "📅 "
                 
