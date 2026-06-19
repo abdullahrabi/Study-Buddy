@@ -77,7 +77,8 @@ Calendar_Icon = get_base64_file("Assets/Calendar.png") if os.path.exists("Assets
 target_icon = get_base64_file("Assets/target.png") if os.path.exists("Assets/target.png") else ""
 book_icon = get_base64_file("Assets/book.jpeg") if os.path.exists("Assets/book.jpeg") else ""
 quiz_icon = get_base64_file("Assets/quiz.jpeg") if os.path.exists("Assets/quiz.jpeg") else ""
-
+bin_icon = get_base64_file("Assets/bin.png") if os.path.exists("Assets/bin.png") else ""
+search_icon= get_base64_file("Assets/search_icon.png") if os.path.exists("Assets/search_icon.png") else ""
 def show_custom_loader(text="Processing..."):
     """Display custom GIF loader using base64 with minimal gap"""
     if Spinner_Loader:
@@ -582,8 +583,11 @@ with st.sidebar:
             )
 
         st.markdown("</div>", unsafe_allow_html=True)
-
-        if st.button("🗑️ Clear All Chats", use_container_width=True, type="secondary"):
+        if bin_icon:
+            bin_icon= f"![Icon](data:image/png;base64,{bin_icon}) "
+        else:
+            bin_icon= "🗑️"
+        if st.button(f"{bin_icon} Clear All Chats", use_container_width=True, type="secondary"):
             st.session_state.chat_sessions = []
             st.session_state.current_session_id = None
             try:
@@ -1355,7 +1359,11 @@ with tab2:
                 """, unsafe_allow_html=True)
         
         else:
-            st.info("🎯 Enter a topic to generate a quiz")
+            if search_icon:
+                search_icon_html = f'![search_icon-class](data:image/png;base64,{search_icon})'
+            else:
+                search_icon_html = "🔍 "
+            st.info(f"{search_icon_html} Enter a  topic to generate a quiz ")
             
             st.session_state.custom_topic = st.text_input(
                 "Enter your topic:",
