@@ -129,11 +129,15 @@ def format_timestamp_for_display(timestamp, user_timezone=None):
     relative_time = get_relative_time(timestamp, user_timezone)
     return f"{local_time} ({relative_time})"
 
-# ---------------- EMBEDDING FUNCTION ----------------
+# ---------------- IMPROVED EMBEDDING FUNCTION ----------------
 def embed_text(text: str):
     try:
         if not text or not text.strip():
             print("[WARNING] Empty text provided for embedding")
+            # Return a random vector with some pattern
+            import hashlib
+            hash_val = int(hashlib.md5(str(time.time()).encode()).hexdigest()[:8], 16)
+            random.seed(hash_val)
             return [random.uniform(0.01, 0.02) for _ in range(768)]
         
         text = text.strip()
@@ -158,6 +162,9 @@ def embed_text(text: str):
                 emb = list(result.embeddings[0])
         
         if emb is None:
+            import hashlib
+            hash_val = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
+            random.seed(hash_val)
             return [random.uniform(0.01, 0.02) for _ in range(768)]
         
         if len(emb) != 768:
@@ -166,24 +173,39 @@ def embed_text(text: str):
             else:
                 emb = emb[:768]
         
-        if all(abs(v) < 0.0001 for v in emb):
-            emb = [v + (random.random() * 0.0001 - 0.00005) for v in emb]
+        # Normalize the vector
+        norm = sum(v**2 for v in emb) ** 0.5
+        if norm > 0:
+            emb = [v / norm for v in emb]
         
         return emb
         
     except Exception as e:
         print(f"[ERROR] embed_text: {e}")
+        import hashlib
+        if text:
+            hash_val = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
+            random.seed(hash_val)
+        else:
+            random.seed(int(time.time()))
         return [random.uniform(0.01, 0.02) for _ in range(768)]
 
-# ---------------- RAG CONTEXT RETRIEVAL ----------------
+# ---------------- IMPROVED RAG CONTEXT RETRIEVAL ----------------
 def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
+    """
+    Retrieve relevant context from Pinecone with improved handling.
+    Returns context string or helpful message if no context found.
+    """
     try:
+        # Generate embedding for the query
         q_emb = embed_text(query)
         
+        # Prepare filter
         filter_dict = {}
         if user_id:
             filter_dict["user_id"] = {"$eq": user_id}
         
+        # Query Pinecone
         if filter_dict:
             resp = index.query(
                 vector=q_emb, 
@@ -200,28 +222,79 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
                 include_values=False
             )
         
+        # Debug: Check what's returned
+        matches = getattr(resp, "matches", [])
+        print(f"  [DEBUG] Found {len(matches)} matches for: {query[:30]}...")
+        
+        if not matches:
+            print(f"  [DEBUG] No matches found at all!")
+            return "No relevant information found in the knowledge base."
+        
+        # Collect contexts with lower threshold
         contexts = []
         seen_texts = set()
+        source_info = []
         
-        for match in getattr(resp, "matches", []):
+        for match in matches:
             meta = match.metadata or {}
             text = meta.get("text", "")
             score = match.score or 0
+            source = meta.get("type", meta.get("source", "unknown"))
             
-            if text and score > 0.3 and text not in seen_texts:
+            # DEBUG: Show scores
+            print(f"  [DEBUG] Score: {score:.3f} - Source: {source} - Text length: {len(text)}")
+            
+            # Lower threshold to 0.1 to catch more results
+            if text and score > 0.1 and text not in seen_texts:
                 seen_texts.add(text)
-                source_type = meta.get("type", "unknown")
-                context_text = f"[From {source_type}]: {text}"
-                if len(contexts) < 3:
-                    contexts.append(context_text)
+                source_type = meta.get("type", meta.get("source", "unknown"))
+                
+                # Truncate if too long
+                if len(text) > 800:
+                    text = text[:800] + "..."
+                
+                context_text = f"[From {source_type}] {text}"
+                contexts.append((score, context_text))
+                source_info.append(source_type)
         
-        if contexts:
-            return "\n\n---\n\n".join(contexts)
-        return ""
+        # Sort by score (highest first)
+        contexts.sort(key=lambda x: x[0], reverse=True)
+        
+        # Take top 3 contexts
+        top_contexts = [ctx[1] for ctx in contexts[:3]]
+        
+        if top_contexts:
+            result = "\n\n---\n\n".join(top_contexts)
+            print(f"  [DEBUG] Returning {len(top_contexts)} contexts, total length: {len(result)}")
+            return result
+        
+        # If no context found with score > 0.1, try without score filter
+        print(f"  [DEBUG] No high-score contexts found, trying fallback...")
+        
+        # Fallback: Take any context with text
+        fallback_contexts = []
+        for match in matches:
+            meta = match.metadata or {}
+            text = meta.get("text", "")
+            if text and text not in seen_texts:
+                seen_texts.add(text)
+                if len(text) > 800:
+                    text = text[:800] + "..."
+                fallback_contexts.append(f"[From {meta.get('type', 'unknown')}] {text}")
+                if len(fallback_contexts) >= 3:
+                    break
+        
+        if fallback_contexts:
+            return "\n\n---\n\n".join(fallback_contexts)
+        
+        return "No relevant information found in the knowledge base. I'll try to answer based on general knowledge."
         
     except Exception as e:
         print(f"[ERROR] retrieve_context: {e}")
-        return ""
+        import traceback
+        traceback.print_exc()
+        return "Sorry, I couldn't retrieve information from the knowledge base. Please try again."
+
 
 # ---------------- CHAT HISTORY FUNCTIONS ----------------
 def save_chat_history(user_id: str, chat_history: list, user_timezone=None):
