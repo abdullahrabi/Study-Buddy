@@ -1,276 +1,209 @@
-# Complete file - Fixed for your TruLens version
-from Chatbot import (
-    retrieve_context,
-    save_chat_history,
-    fetch_chat_history,
-    get_gemini_response,
-)
+# rag_eval_trulens_final.py
 import os
-import numpy as np
-import pandas as pd
-import json
 import time
 import re
-import random
-import warnings
-from datetime import datetime
-from typing import List, Dict, Any, Generator
+import sys
+import numpy as np
+import pandas as pd
 from dotenv import load_dotenv
+
+# ============================================
+# CRITICAL: Set OTEL environment variables FIRST
+# ============================================
+os.environ["TRULENS_OTEL_TRACING"] = "1"
+os.environ["TRULENS_OTEL_ENABLED"] = "true"
+os.environ["OTEL_SDK_DISABLED"] = "false"
+
+# Now import the rest
+from pinecone import Pinecone
 from google import genai
 from google.genai import types
-from pinecone import Pinecone, ServerlessSpec
-import fitz  # PyMuPDF
-import docx2txt  # Word extraction
-import serpapi
-import langgraph
-import langchain
-import wikipedia
-from groq import Groq
-from langchain_groq import ChatGroq
-from tavily import TavilyClient
-from langchain_google_genai import ChatGoogleGenerativeAI
-import torch
-import gc
-import atexit
 
-# ============================================
-# 1. PATCH TORCH (for Python 3.13)
-# ============================================
-if not hasattr(torch, 'Tensor'):
-    class Tensor:
-        pass
-    torch.Tensor = Tensor
-    print("✅ Patched torch.Tensor")
+from llama_index.core import Settings
+from llama_index.core.base.embeddings.base import BaseEmbedding
+from llama_index.llms.groq import Groq
 
-# ============================================
-# 2. IMPORT TRULENS - CORRECT WAY WITH TruApp
-# ============================================
-try:
-    from trulens.core import TruSession, Metric
-    from trulens.apps.app import TruApp
-    TRULENS_AVAILABLE = True
-    print("✅ TruLens imported successfully with TruApp!")
-except ImportError as e:
-    print(f"⚠️ TruLens import error: {e}")
-    TRULENS_AVAILABLE = False
-    # Fallback classes
-    class TruSession:
-        def __init__(self): pass
-        def run_dashboard(self): print("Dashboard not available")
-        def get_records(self): return []
-        def reset_database(self): print("Database reset (simulated)")
-        def record(self, **kwargs): pass
-    class Metric:
-        def __init__(self, func): self.func = func
-        def on_input(self): return self
-        def on_output(self): return self
-        def on_context(self, **kwargs): return self
-        def aggregate(self, func): return self
-    class TruApp:
-        def __init__(self, *args, **kwargs): pass
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
+from trulens.core import TruSession, Metric, FeedbackMode
+from trulens.apps.app import TruApp
+from trulens.dashboard import run_dashboard
 
-# Suppress warnings
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-
-# ============================================
-# 3. LOAD ENV VARIABLES
-# ============================================
 load_dotenv()
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
-DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
+INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 
-if not GEMINI_API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY not found!")
-if not PINECONE_API_KEY:
-    raise ValueError("❌ PINECONE_API_KEY not found!")
+print("=" * 70)
+print("🚀 RAG EVALUATION WITH TRULENS")
+print("=" * 70)
+print(f"\n🐍 Python Version: {sys.version}")
 
 # ============================================
-# 4. RESET TRULENS DATABASE (CRITICAL FIX!)
+# 1. CUSTOM EMBEDDING CLASS
 # ============================================
-print("\n🧹 Resetting TruLens database to ensure clean run...")
 
-if TRULENS_AVAILABLE:
-    try:
-        session = TruSession()
-        # Try different reset methods
+class GeminiDirectEmbedding(BaseEmbedding):
+    api_key: str
+    model_name: str = "gemini-embedding-2"
+    dimension: int = 768
+    
+    def __init__(self, api_key: str, model_name: str = "gemini-embedding-2", dimension: int = 768, **kwargs):
+        super().__init__(api_key=api_key, model_name=model_name, dimension=dimension, **kwargs)
+        self._client = None
+    
+    @property
+    def client(self):
+        if self._client is None:
+            self._client = genai.Client(api_key=self.api_key)
+        return self._client
+    
+    def _get_query_embedding(self, query: str) -> list:
+        return self._embed_text(query)
+    
+    def _get_text_embedding(self, text: str) -> list:
+        return self._embed_text(text)
+    
+    async def _aget_query_embedding(self, query: str) -> list:
+        return self._get_query_embedding(query)
+    
+    async def _aget_text_embedding(self, text: str) -> list:
+        return self._get_text_embedding(text)
+    
+    def _embed_text(self, text: str) -> list:
         try:
-            session.reset_database()
-        except:
-            try:
-                session.reset()
-            except:
-                print("⚠️ Could not reset database, continuing...")
-        print("✅ TruLens ready!")
-    except Exception as e:
-        print(f"⚠️ Could not reset database: {e}")
-        session = TruSession()
-else:
-    session = TruSession()
-    print("⚠️ TruLens not available - running without database")
-
-# ============================================
-# 5. CREATE RAG APP CLASS FOR TRULENS
-# ============================================
-class RAGApp:
-    """RAG Application wrapped for TruLens"""
-    
-    def __init__(self):
-        self.client = Groq(api_key=GROQ_API_KEY)
-    
-    def retrieve(self, query: str):
-        """Retrieve context for a query"""
-        return retrieve_context(query, user_id="default_user_id", top_k=3)
-    
-    def generate(self, query: str, context: str):
-        """Generate answer using context"""
-        prompt = f"""Based on the following context, answer the question.
-        
-Context: {context}
-
-Question: {query}
-
-Answer:"""
-        
-        response = self.client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
-        return response.choices[0].message.content
-    
-    def respond(self, query: str):
-        """Full response pipeline - this is the main method TruLens will track"""
-        context = self.retrieve(query)
-        answer = self.generate(query, context)
-        return answer, context
-
-print("✅ RAG App class created!")
-
-# ============================================
-# 6. LOAD EVALUATION QUESTIONS
-# ============================================
-print("\n📚 Loading evaluation questions...")
-
-eval_questions = []
-file_loaded = False
-
-try:
-    with open('generated_questions.txt', 'r', encoding='utf-8') as file:
-        for line in file:
-            item = line.strip()
-            if item:  # Skip empty lines
-                eval_questions.append(item)
-    file_loaded = True
-    print(f"✅ Loaded {len(eval_questions)} evaluation questions from file")
-except FileNotFoundError:
-    print("⚠️ generated_questions.txt not found. Using sample questions.")
-    eval_questions = [
-        "What is an alphabet in automata theory?",
-        "What is the symbol used to denote the empty string?",
-        "What is the Kleene star operator (Σ*) used for?",
-        "What is a formal language?",
-        "Difference between ∅ and {ε}?"
-    ]
-    print(f"✅ Using {len(eval_questions)} sample questions")
-
-# Show all questions
-print(f"\n📋 Questions to evaluate ({len(eval_questions)} total):")
-for i, q in enumerate(eval_questions, 1):
-    print(f"  {i}. {q[:60]}...")
-
-# ============================================
-# 7. GET ANSWERS FOR ALL QUESTIONS
-# ============================================
-print("\n🔄 Getting answers from chatbot...")
-answers = []
-for i, question in enumerate(eval_questions, 1):
-    try:
-        print(f"  Processing {i}/{len(eval_questions)}: {question[:50]}...")
-        response = get_gemini_response(question, user_id="eval_user")
-        
-        # Handle streaming response
-        if hasattr(response, '__iter__') and not isinstance(response, str):
-            full_response = ""
-            for chunk in response:
-                if chunk:
-                    full_response += chunk
-            answers.append(full_response)
-        else:
-            answers.append(str(response))
+            if not text or not text.strip():
+                return None
+            if len(text) > 8000:
+                text = text[:8000]
             
-    except Exception as e:
-        print(f"❌ Error: {question[:50]}... - {e}")
-        answers.append(f"ERROR: {str(e)}")
+            result = self.client.models.embed_content(
+                model=self.model_name,
+                contents=[text],
+                config=types.EmbedContentConfig(output_dimensionality=self.dimension)
+            )
+            
+            if result and result.embeddings and len(result.embeddings) > 0:
+                emb = result.embeddings[0].values
+                norm = sum(v**2 for v in emb) ** 0.5
+                if norm > 0:
+                    return [v / norm for v in emb]
+            return None
+        except Exception as e:
+            print(f"[ERROR] embed: {e}")
+            return None
+    
+    @classmethod
+    def class_name(cls) -> str:
+        return "GeminiDirectEmbedding"
 
-print(f"✅ Completed {len(answers)}/{len(eval_questions)} questions")
+# ============================================
+# 2. RAG SYSTEM
+# ============================================
+
+class DirectRAG:
+    def __init__(self, pinecone_index, embed_model, llm):
+        self.pinecone_index = pinecone_index
+        self.embed_model = embed_model
+        self.llm = llm
+        self.last_context = ""
+        self.last_documents = []
+        self.last_question = ""
+        self.last_answer = ""
+    
+    def retrieve(self, query: str, top_k: int = 15) -> list:
+        try:
+            query_embedding = self.embed_model._embed_text(query)
+            if not query_embedding:
+                return []
+            
+            results = self.pinecone_index.query(
+                vector=query_embedding,
+                top_k=top_k,
+                include_metadata=True
+            )
+            
+            documents = []
+            for match in results.matches:
+                if match.metadata and 'text' in match.metadata:
+                    documents.append({
+                        'text': match.metadata['text'],
+                        'score': match.score,
+                        'metadata': match.metadata
+                    })
+            return documents
+        except Exception as e:
+            print(f"⚠️ Retrieval error: {e}")
+            return []
+    
+    def get_context(self, question: str) -> str:
+        try:
+            documents = self.retrieve(question, top_k=5)
+            if not documents:
+                return "No documents retrieved"
+            contexts = []
+            for doc in documents[:5]:
+                text = doc['text'][:300] if doc['text'] else "No text"
+                contexts.append(f"[Score: {doc['score']:.3f}] {text}...")
+            return "\n\n---\n\n".join(contexts)
+        except Exception as e:
+            return f"Error: {e}"
+    
+    def query(self, question: str) -> str:
+        self.last_question = question
+        try:
+            documents = self.retrieve(question, top_k=10)
+            self.last_documents = documents
+            
+            if not documents:
+                return "No relevant documents found."
+            
+            top_docs = documents[:5]
+            
+            self.last_context = "\n\n---\n\n".join([
+                f"[Score: {doc['score']:.3f}] {doc['text'][:500]}"
+                for doc in top_docs
+            ])
+            
+            context_text = "\n\n".join([doc['text'] for doc in top_docs])
+            
+            prompt = f"""You are a helpful assistant specializing in automata theory. Answer based on the context.
+
+CONTEXT:
+{context_text}
+
+QUESTION:
+{question}
+
+ANSWER:"""
+            
+            response = self.llm.complete(prompt)
+            self.last_answer = str(response).strip()
+            return self.last_answer
+        except Exception as e:
+            return f"Error: {e}"
 
 # ============================================
-# 8. RETRIEVE CONTEXTS FOR EVALUATION
+# 3. METRIC EVALUATORS (Using Production Model)
 # ============================================
-print("\n🔄 Retrieving contexts for evaluation...")
-contexts = []
-for q in eval_questions:
-    try:
-        context = retrieve_context(q, user_id="default_user_id", top_k=3)
-        contexts.append([context])
-    except Exception as e:
-        print(f"⚠️ Error retrieving context for '{q[:30]}...': {e}")
-        contexts.append(["No context available"])
-print("✅ Contexts retrieved")
 
-# ============================================
-# 9. FIX: IMPROVED METRIC PARSING
-# ============================================
-def parse_score(response_text: str) -> float:
-    """Extract float score from response text"""
-    try:
-        # Try direct conversion first
-        return float(response_text.strip())
-    except:
-        # Find all numbers in the response
-        numbers = re.findall(r'(\d+\.?\d*)', response_text)
+def create_metric_evaluators():
+    from groq import Groq as GroqClient
+    client = GroqClient(api_key=GROQ_API_KEY)
+    
+    def clean_score(text: str) -> float:
+        numbers = re.findall(r'(\d+\.?\d*)', text)
         if numbers:
-            # Take the first number found
-            return float(numbers[0])
-        else:
-            return 0.5
-
-# ============================================
-# 10. CREATE CUSTOM METRICS
-# ============================================
-client = Groq(api_key=GROQ_API_KEY)
-
-def evaluate_context_relevance(input: str, context: list) -> float:
-    """Evaluate if context is relevant to the question"""
-    try:
-        prompt = f"""Rate the relevance of the context to the question on a scale of 0-1.
-        Return ONLY a number between 0 and 1.
-        
-        Question: {input}
-        Context: {context[0][:500] if context and context[0] else "No context"}
-        
-        Relevance score (0-1):"""
-        
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-        return parse_score(response.choices[0].message.content.strip())
-    except Exception as e:
-        print(f"⚠️ Error in context relevance: {e}")
+            try:
+                return float(numbers[0])
+            except:
+                pass
         return 0.5
-
-def evaluate_answer_relevance(input: str, output: str) -> float:
-    """Evaluate if the answer is relevant to the question"""
-    try:
+    
+    # Use production model to avoid rate limits
+    EVAL_MODEL = "llama-3.3-70b-versatile"
+    
+    def evaluate_relevance(input: str, output: str) -> float:
         prompt = f"""Rate the relevance of the answer to the question on a scale of 0-1.
         Return ONLY a number between 0 and 1.
         
@@ -279,417 +212,306 @@ def evaluate_answer_relevance(input: str, output: str) -> float:
         
         Relevance score (0-1):"""
         
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-        return parse_score(response.choices[0].message.content.strip())
-    except Exception as e:
-        print(f"⚠️ Error in answer relevance: {e}")
-        return 0.5
-
-def evaluate_groundedness(context: list, output: str) -> float:
-    """Evaluate if the answer is grounded in the context"""
-    try:
-        prompt = f"""Rate how grounded the answer is in the context on a scale of 0-1.
+        try:
+            response = client.chat.completions.create(
+                model=EVAL_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            return clean_score(response.choices[0].message.content.strip())
+        except Exception as e:
+            print(f"  ⚠️ Relevance error: {e}")
+            return 0.5
+    
+    def evaluate_quality(input: str, output: str) -> float:
+        prompt = f"""Rate the quality of the answer on a scale of 0-1.
+        Consider accuracy, completeness, and clarity.
         Return ONLY a number between 0 and 1.
         
-        Context: {context[0][:500] if context and context[0] else "No context"}
+        Question: {input}
         Answer: {output[:500] if output else "No answer"}
         
-        Groundedness score (0-1):"""
+        Quality score (0-1):"""
         
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0
-        )
-        return parse_score(response.choices[0].message.content.strip())
-    except Exception as e:
-        print(f"⚠️ Error in groundedness: {e}")
-        return 0.5
-
-print("✅ Custom metrics created!")
-
-# ============================================
-# 11. SETUP TRULENS WITH TruApp
-# ============================================
-print("\n🔧 Setting up TruLens with TruApp...")
-
-# Create Metrics
-f_context_relevance = (
-    Metric(evaluate_context_relevance)
-    .on_input()
-    .on_context(collect_list=False)
-    .aggregate(np.mean)
-)
-
-f_answer_relevance = (
-    Metric(evaluate_answer_relevance)
-    .on_input()
-    .on_output()
-)
-
-f_groundedness = (
-    Metric(evaluate_groundedness)
-    .on_context(collect_list=False)
-    .on_output()
-)
-
-print("✅ Metrics defined!")
-
-# ============================================
-# 12. WRAP APP WITH TruApp
-# ============================================
-print("\n🚀 Wrapping app with TruApp...")
-
-# Create your app instance
-rag_app = RAGApp()
-
-# Create variables to hold the recorder and results
-tru_recorder = None
-records_data = None
-
-# Wrap with TruApp
-if TRULENS_AVAILABLE:
-    tru_recorder = TruApp(
-        rag_app,
-        app_name="RAG_Evaluation_App",
-        app_version="v1.0",
-        feedbacks=[f_context_relevance, f_answer_relevance, f_groundedness],
-        main_method=rag_app.respond
-    )
-    print("✅ App wrapped with TruApp!")
-else:
-    print("⚠️ TruLens not available - running without recording")
-
-# ============================================
-# 13. RUN EVALUATION WITH TruApp
-# ============================================
-print("\n🚀 Running Evaluation...")
-print(f"📊 Evaluating {len(eval_questions)} questions...")
-print("=" * 60)
-
-records = []
-manual_records = []  # For manual tracking
-
-if TRULENS_AVAILABLE and tru_recorder:
-    # Use TruApp recorder context
-    with tru_recorder as recording:
-        for i, question in enumerate(eval_questions, 1):
-            print(f"📝 Processing {i}/{len(eval_questions)}: {question[:50]}...")
-            answer, context = rag_app.respond(question)
-            print(f"  Answer preview: {answer[:100]}...")
-            
-            # Also store manually for verification
-            manual_records.append({
-                "question": question,
-                "answer": answer,
-                "context": context
-            })
-    
-    print(f"\n✅ Evaluation recorded with TruLens! ({len(eval_questions)} questions)")
-    
-    # IMPORTANT: Wait for feedback computations to complete
-    print("\n⏳ Waiting for feedback computations to complete...")
-    time.sleep(5)  # Give feedback threads time to finish
-    
-    # Force garbage collection
-    gc.collect()
-    
-else:
-    # Run without TruLens recording
-    for i, question in enumerate(eval_questions, 1):
-        print(f"📝 Processing {i}/{len(eval_questions)}: {question[:50]}...")
-        answer, context = rag_app.respond(question)
-        print(f"  Answer preview: {answer[:100]}...")
-        
-        # Calculate scores manually
-        context_score = evaluate_context_relevance(question, [context])
-        answer_score = evaluate_answer_relevance(question, answer)
-        grounded_score = evaluate_groundedness([context], answer)
-        
-        record = {
-            "input": question,
-            "output": answer,
-            "context": context,
-            "context_relevance": context_score,
-            "answer_relevance": answer_score,
-            "groundedness": grounded_score
-        }
-        records.append(record)
-
-print("\n✅ Evaluation complete!")
-
-# ============================================
-# 14. FIX: GET RESULTS FROM TRULENS (Different method)
-# ============================================
-if TRULENS_AVAILABLE and tru_recorder:
-    print("\n📊 Retrieving results from TruLens...")
-    try:
-        print("⏳ Waiting for feedbacks to finalize...")
-        time.sleep(3)
-        
-        # Try different methods to get records
-        records_data = None
-        
-        # Method 1: Try to get records from session
         try:
-            if hasattr(session, 'get_records'):
-                records_data = session.get_records()
-            elif hasattr(session, 'get'):
-                records_data = session.get()
-            elif hasattr(session, 'records'):
-                records_data = session.records
+            response = client.chat.completions.create(
+                model=EVAL_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0
+            )
+            return clean_score(response.choices[0].message.content.strip())
         except Exception as e:
-            print(f"⚠️ Method 1 failed: {e}")
+            print(f"  ⚠️ Quality error: {e}")
+            return 0.5
+    
+    return evaluate_relevance, evaluate_quality
+
+# ============================================
+# 4. MAIN EXECUTION
+# ============================================
+
+def main():
+    print("\n🔧 Configuring...")
+    
+    embed_model = GeminiDirectEmbedding(
+        api_key=GEMINI_API_KEY,
+        model_name="gemini-embedding-2",
+        dimension=768
+    )
+    
+    llm = Groq(
+        model="llama-3.3-70b-versatile",  # Production model
+        api_key=GROQ_API_KEY,
+        temperature=0.3,
+    )
+    
+    Settings.embed_model = embed_model
+    Settings.llm = llm
+    
+    print(f"\n🔗 Connecting to Pinecone index '{INDEX_NAME}'...")
+    
+    pc = Pinecone(api_key=PINECONE_API_KEY)
+    if INDEX_NAME not in [idx.name for idx in pc.list_indexes()]:
+        raise ValueError(f"❌ Index '{INDEX_NAME}' not found!")
+    
+    pinecone_index = pc.Index(INDEX_NAME)
+    stats = pinecone_index.describe_index_stats()
+    print(f"✅ Connected: {stats.total_vector_count} vectors, {stats.dimension} dimensions")
+    
+    rag = DirectRAG(pinecone_index, embed_model, llm)
+    print("✅ RAG system ready\n")
+    
+    eval_questions = [
+        "What is an alphabet in automata theory?",
+        "What is the symbol used to denote the empty string?",
+        "What is the Kleene star operator used for?",
+        "What is a formal language?",
+        "What is the difference between ∅ and {ε}?",
+        "Given the regular expression [A-Z][a-z]* [ ][A-Z][A-Z], what pattern does it represent and what is its limitation?",
+        "List three software applications using automata.",
+    ]
+    
+    print("📚 Loaded evaluation questions:")
+    for i, q in enumerate(eval_questions, 1):
+        print(f"  {i}. {q[:60]}...")
+    
+    print("\n" + "=" * 70)
+    print("🚀 RUNNING EVALUATION")
+    print("=" * 70)
+    
+    answers = []
+    contexts = []
+    latencies = []
+    
+    for i, q in enumerate(eval_questions, 1):
+        print(f"\n📝 Q{i}: {q[:50]}...")
+        print("-" * 40)
         
-        # Method 2: Try to get from app
-        if records_data is None and tru_recorder:
-            try:
-                if hasattr(tru_recorder, 'get_records'):
-                    records_data = tru_recorder.get_records()
-                elif hasattr(tru_recorder, 'records'):
-                    records_data = tru_recorder.records
-            except Exception as e:
-                print(f"⚠️ Method 2 failed: {e}")
+        context = rag.get_context(q)
+        contexts.append([context])
         
-        # Method 3: Create DataFrame from manual records
-        if records_data is None or len(records_data) == 0:
-            print("⚠️ Could not retrieve from TruLens, creating manual results...")
-            
-            # Calculate scores for all questions manually
-            df_manual = pd.DataFrame()
-            inputs = []
-            outputs = []
-            context_scores = []
-            answer_scores = []
-            grounded_scores = []
-            
-            for i, q in enumerate(eval_questions):
-                # Get the context and answer from manual_records
-                if i < len(manual_records):
-                    ctx = manual_records[i]['context']
-                    ans = manual_records[i]['answer']
-                else:
-                    ctx = contexts[i][0] if i < len(contexts) and contexts[i] else "No context"
-                    ans = answers[i] if i < len(answers) else "No answer"
-                
-                inputs.append(q)
-                outputs.append(ans[:200] + "..." if len(ans) > 200 else ans)
-                context_scores.append(evaluate_context_relevance(q, [ctx]))
-                answer_scores.append(evaluate_answer_relevance(q, ans))
-                grounded_scores.append(evaluate_groundedness([ctx], ans))
-            
-            df_manual['input'] = inputs
-            df_manual['output'] = outputs
-            df_manual['context_relevance'] = context_scores
-            df_manual['answer_relevance'] = answer_scores
-            df_manual['groundedness'] = grounded_scores
-            
-            records_data = df_manual
-            print("✅ Created manual results DataFrame")
+        start_time = time.time()
+        answer = rag.query(q)
+        latency = time.time() - start_time
+        answers.append(answer)
+        latencies.append(latency)
         
-        # Display results
-        if records_data is not None and len(records_data) > 0:
-            # Convert to DataFrame if needed
-            if not isinstance(records_data, pd.DataFrame):
-                try:
-                    df = records_data.to_pandas()
-                except:
-                    df = pd.DataFrame(records_data)
-            else:
-                df = records_data
-            
-            print("\n" + "=" * 60)
-            print("📈 EVALUATION RESULTS SUMMARY")
-            print("=" * 60)
-            
-            print(f"\n📊 Total Records: {len(df)}")
-            print(f"📋 Expected Records: {len(eval_questions)}")
-            
-            if len(df) == len(eval_questions):
-                print("✅ PERFECT! Records match expected count!")
-            else:
-                print(f"⚠️ Mismatch! Database has {len(df)} records, expected {len(eval_questions)}")
-            
-            # Display metrics
-            print("\n📈 METRIC SCORES:")
-            print("-" * 40)
-            
-            # Find metric columns
-            metric_cols = []
-            for col in df.columns:
-                if any(metric in col.lower() for metric in ['context_relevance', 'answer_relevance', 'groundedness']):
-                    metric_cols.append(col)
-            
-            if metric_cols:
-                for col in metric_cols:
-                    if col in df.columns:
-                        mean_score = df[col].mean()
-                        std_score = df[col].std()
-                        min_score = df[col].min()
-                        max_score = df[col].max()
-                        
-                        # Determine rating
-                        if mean_score >= 0.8:
-                            rating = "✅ Excellent"
-                        elif mean_score >= 0.6:
-                            rating = "✅ Good"
-                        elif mean_score >= 0.4:
-                            rating = "⚠️ Medium"
-                        else:
-                            rating = "❌ Poor"
-                        
-                        print(f"\n  {col.replace('_', ' ').title()}:")
-                        print(f"    Mean:   {mean_score:.3f} {rating}")
-                        print(f"    Std:    {std_score:.3f}")
-                        print(f"    Min:    {min_score:.3f}")
-                        print(f"    Max:    {max_score:.3f}")
-            else:
-                print("⚠️ No metric columns found in results")
-                print(f"Available columns: {df.columns.tolist()}")
-            
-            # Show individual results
-            print("\n📋 DETAILED RESULTS:")
-            print("-" * 60)
-            
-            # Display first 10 results
-            display_cols = []
-            if 'input' in df.columns:
-                display_cols.append('input')
-            display_cols.extend([col for col in metric_cols if col in df.columns])
-            
-            if display_cols:
-                for idx, row in df[display_cols].head(10).iterrows():
-                    q = str(row.get('input', ''))[:50] + "..." if len(str(row.get('input', ''))) > 50 else str(row.get('input', ''))
-                    print(f"\nQ{idx+1}: {q}")
-                    for col in metric_cols:
-                        if col in row:
-                            print(f"  {col}: {row[col]:.3f}")
-            else:
-                print("No display columns found")
-            
-            # Save results
-            df.to_csv("trulens_results.csv", index=False)
-            print("\n💾 Results saved to trulens_results.csv")
-            
-        else:
-            print("⚠️ No records found in TruLens database.")
-            
-    except Exception as e:
-        print(f"⚠️ Error retrieving results: {e}")
-        print("💡 Results may be available in the dashboard.")
-
-# ============================================
-# 15. SAVE MANUAL RESULTS (if TruLens not available)
-# ============================================
-if not TRULENS_AVAILABLE and records:
-    df = pd.DataFrame(records)
+        print(f"⏱️ Latency: {latency:.2f}s")
+        print(f"🤖 Answer:\n{answer[:200]}...")
     
-    print("\n" + "=" * 60)
-    print("📈 EVALUATION RESULTS (Manual)")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print("📊 CALCULATING METRICS")
+    print("=" * 70)
     
-    print(f"\n📊 Total Records: {len(df)}")
+    evaluate_relevance, evaluate_quality = create_metric_evaluators()
     
-    print("\n📈 METRIC SCORES:")
-    print("-" * 40)
-    
-    for metric in ['context_relevance', 'answer_relevance', 'groundedness']:
-        mean_score = df[metric].mean()
-        if mean_score >= 0.8:
-            rating = "✅ Excellent"
-        elif mean_score >= 0.6:
-            rating = "✅ Good"
-        elif mean_score >= 0.4:
-            rating = "⚠️ Medium"
-        else:
-            rating = "❌ Poor"
+    print("🔄 Calculating metrics...")
+    metrics_data = []
+    for i, (q, a) in enumerate(zip(eval_questions, answers), 1):
+        print(f"  Calculating metrics for Q{i}: {q[:40]}...")
         
-        print(f"\n  {metric.replace('_', ' ').title()}:")
-        print(f"    Mean: {mean_score:.3f} {rating}")
-        print(f"    Std:  {df[metric].std():.3f}")
-        print(f"    Min:  {df[metric].min():.3f}")
-        print(f"    Max:  {df[metric].max():.3f}")
+        relevance_score = evaluate_relevance(q, a)
+        quality_score = evaluate_quality(q, a)
+        
+        metrics_data.append({
+            'question': q,
+            'answer': a[:200] + "...",
+            'relevance': relevance_score,
+            'quality': quality_score,
+            'latency': latencies[i-1]
+        })
     
-    print("\n📋 DETAILED RESULTS:")
-    print("-" * 60)
-    for i, row in df.iterrows():
-        print(f"\nQ{i+1}: {row['input'][:50]}...")
-        print(f"  Context Relevance: {row['context_relevance']:.3f}")
-        print(f"  Answer Relevance:  {row['answer_relevance']:.3f}")
-        print(f"  Groundedness:      {row['groundedness']:.3f}")
+    df_metrics = pd.DataFrame(metrics_data)
+    df_metrics.to_csv("trulens_results.csv", index=False)
+    print("\n💾 Metrics saved to trulens_results.csv")
     
-    # Save results
-    df.to_csv("trulens_results.csv", index=False)
-    print("\n💾 Results saved to trulens_results.csv")
-
-# ============================================
-# 16. FINAL SUMMARY
-# ============================================
-print("\n" + "=" * 60)
-print("📊 FINAL SUMMARY")
-print("=" * 60)
-
-print(f"\n✅ Questions Evaluated: {len(eval_questions)}")
-print(f"✅ Total Records: {len(df) if 'df' in locals() and df is not None else 0}")
-
-if TRULENS_AVAILABLE:
-    print("✅ TruLens Dashboard: Available")
-    print("🌐 Dashboard URL: http://localhost:8501 (or the port shown below)")
-else:
-    print("⚠️ TruLens Dashboard: Not Available")
-
-# ============================================
-# 17. CLEANUP
-# ============================================
-print("\n🧹 Cleaning up...")
-gc.collect()
-
-try:
-    if TRULENS_AVAILABLE and tru_recorder:
-        if hasattr(tru_recorder, 'cleanup'):
-            tru_recorder.cleanup()
-        elif hasattr(tru_recorder, '_cleanup'):
-            tru_recorder._cleanup()
-except Exception as e:
-    print(f"⚠️ Cleanup warning: {e}")
-
-# ============================================
-# 18. LAUNCH DASHBOARD
-# ============================================
-print("\n🌐 Launching TruLens dashboard...")
-time.sleep(2)
-
-try:
-    if TRULENS_AVAILABLE and tru_recorder:
-        print("Opening dashboard...")
-        # Use the new method
-        from trulens.dashboard import run_dashboard
-        run_dashboard()
-    else:
-        print("ℹ️ TruLens not available. Results saved to CSV.")
-except Exception as e:
-    print(f"⚠️ Dashboard error: {e}")
-    print("📊 Results are available in trulens_results.csv")
+    print("\n" + "=" * 70)
+    print("📊 METRICS SUMMARY")
+    print("=" * 70)
     
-    # Try alternative
+    print("\n📈 Overall Averages:")
+    print(f"  Relevance: {df_metrics['relevance'].mean():.3f}")
+    print(f"  Quality: {df_metrics['quality'].mean():.3f}")
+    print(f"  Average Latency: {df_metrics['latency'].mean():.2f}s")
+    
+    # ============================================
+    # TRULENS EVALUATION - FIXED: Use feedbacks approach
+    # ============================================
+    
+    print("\n" + "=" * 70)
+    print("📊 SETTING UP TRULENS")
+    print("=" * 70)
+    
+    # Delete old database
+    if os.path.exists("default.sqlite"):
+        try:
+            os.remove("default.sqlite")
+            print("🗑️ Deleted old database")
+        except:
+            pass
+    
+    # Create session
+    session = TruSession()
+    session.reset_database()
+    print("✅ Session created")
+    
+    # ============================================
+    # FIX: Create a wrapper class (like RAGApp in working version)
+    # ============================================
+    class RAGWrapper:
+        def __init__(self, rag):
+            self.rag = rag
+        
+        def respond(self, question: str):
+            """Main method that TruLens will track - returns (answer, context)"""
+            context = self.rag.get_context(question)
+            answer = self.rag.query(question)
+            return answer, context
+    
+    # Create wrapper
+    rag_wrapper = RAGWrapper(rag)
+    
+    # Create metrics (using evaluate functions)
+    f_relevance = (
+        Metric(evaluate_relevance, name="Relevance")
+        .on_input()
+        .on_output()
+    )
+    
+    f_quality = (
+        Metric(evaluate_quality, name="Quality")
+        .on_input()
+        .on_output()
+    )
+    
+    print("✅ Metrics defined")
+    
+    # ============================================
+    # FIX: Use feedbacks parameter (NOT metrics)
+    # ============================================
+    tru_recorder = TruApp(
+        rag_wrapper,
+        app_name="RAG_Evaluation",
+        app_version="v1.0",
+        feedbacks=[f_relevance, f_quality],  # ← Use 'feedbacks', not 'metrics'
+        main_method=rag_wrapper.respond      # ← Use wrapper method
+    )
+    
+    print("✅ TruApp created with feedbacks")
+    
+    print("\n🔄 Running TruLens evaluation...")
+    with tru_recorder:
+        for i, q in enumerate(eval_questions, 1):
+            print(f"  Evaluating {i}/{len(eval_questions)}: {q[:40]}...")
+            rag_wrapper.respond(q)
+    
+    print("✅ TruLens evaluation complete")
+    
+    # ============================================
+    # Wait for feedback to complete
+    # ============================================
+    
+    print("\n⏳ Waiting for feedback results...")
+    time.sleep(5)
+    
     try:
-        session.run_dashboard()
-    except:
-        pass
+        tru_recorder.wait_for_feedback_results()
+        print("✅ Feedback results processed")
+    except Exception as e:
+        print(f"⚠️ wait error: {e}")
+    
+    time.sleep(3)
+    
+    try:
+        session.force_flush()
+        print("✅ Force flush completed")
+    except Exception as e:
+        print(f"⚠️ flush error: {e}")
+    
+    time.sleep(3)
+    
+    # ============================================
+    # VERIFY RECORDS
+    # ============================================
+    
+    print("\n🔄 Verifying records...")
+    try:
+        records_df, feedback_names = session.get_records_and_feedback(app_ids=["RAG_Evaluation"])
+        if records_df is not None and len(records_df) > 0:
+            print(f"✅ Found {len(records_df)} records in database")
+            print(f"   Feedback columns: {feedback_names}")
+            records_df.to_csv("trulens_records.csv", index=False)
+            print("💾 Records saved to trulens_records.csv")
+        else:
+            print("⚠️ No records found in database")
+            print("📁 Your metrics are saved in trulens_results.csv")
+    except Exception as e:
+        print(f"⚠️ Could not verify: {e}")
+    
+    # ============================================
+    # LAUNCH DASHBOARD
+    # ============================================
+    
+    print("\n" + "=" * 70)
+    print("🚀 LAUNCHING TRULENS DASHBOARD")
+    print("=" * 70)
+    
+    print("\n📊 Metrics visible in dashboard:")
+    print("   ✓ Relevance")
+    print("   ✓ Quality")
+    
+    print("\n💡 When dashboard opens:")
+    print("   1. Click 'Leaderboard' tab first")
+    print("   2. Then click 'Apps'")
+    print("   3. Select 'RAG_Evaluation'")
+    
+    print("\n🌐 Opening dashboard at http://localhost:8501...")
+    
+    try:
+        run_dashboard(session=session, port=8501)
+    except Exception as e:
+        print(f"⚠️ Dashboard error: {e}")
+        print("\n💡 Manual launch:")
+        print("   streamlit run trulens_eval/dashboard.py")
+    
+    print("\n" + "=" * 70)
+    print("✅ EVALUATION COMPLETE!")
+    print("=" * 70)
+    
+    print(f"""
+📊 PERFORMANCE SUMMARY:
+------------------------
+- Total Questions: {len(df_metrics)}
+- Avg Relevance: {df_metrics['relevance'].mean():.2f}
+- Avg Quality: {df_metrics['quality'].mean():.2f}
+- Avg Latency: {df_metrics['latency'].mean():.2f}s
 
-print("\n✅ Evaluation complete!")
-print("=" * 60)
+📁 Files Generated:
+- trulens_results.csv (All metrics)
+- default.sqlite (TruLens database)
 
-# ============================================
-# 19. REGISTER CLEANUP ON EXIT
-# ============================================
-def cleanup_on_exit():
-    """Cleanup function to run when script exits"""
-    print("🧹 Running final cleanup...")
-    gc.collect()
+🌐 TruLens Dashboard: http://localhost:8501
+    """)
 
-atexit.register(cleanup_on_exit)
+if __name__ == "__main__":
+    main()
