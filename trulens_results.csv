@@ -1,12 +1,17 @@
-question,answer,relevance,quality,latency
-What is an alphabet in automata theory?,"In automata theory, an alphabet is a set of symbols, such as {0, 1}, that are used to form strings. The members of an alphabet are called symbols, and they are the basic building blocks for creating s...",1.0,0.9,1.7674705982208252
-What is the symbol used to denote the empty string?,The symbol used to denote the empty string is ǫ....,1.0,1.0,0.8305380344390869
-What is the Kleene star operator used for?,"The Kleene star operator (∗) is used to denote the closure of a language. It represents the set of all strings that can be formed by concatenating any number of strings from the language, including ze...",1.0,0.9,1.5156044960021973
-What is a formal language?,"A formal language is a (possibly infinite) set of strings, all of which are chosen from some alphabet Σ∗. In other words, if Σ is an alphabet and L ⊆ Σ∗, then L is a (formal) language over Σ. This mea...",1.0,0.9,1.0443403720855713
-What is the difference between ∅ and {ε}?,"∅ (empty set) and {ε} (set containing the empty string) are two distinct concepts in the context of formal languages.
+question,answer,relevance,quality,groundedness,context_relevance,correctness,latency
+What is an alphabet in automata theory?,"In automata theory, an alphabet (denoted as Σ) is a finite set of symbols, also known as characters or letters, from which strings are formed. These symbols can be any type of character, such as lette...",0.9,0.9,0.9,0.9,0.9,6.359727621078491
+What is the symbol used to denote the empty string?,The symbol used to denote the empty string is ǫ....,0.8,0.9,0.9,0.9,0.9,1.0127675533294678
+What is the Kleene star operator used for?,"The Kleene star operator (∗) is used to denote the closure of a language L, representing the set of those strings that can be formed by taking any number of strings from L, possibly with repetitions, ...",0.9,0.95,0.9,0.9,0.9,1.050060510635376
+What is a formal language?,"A formal language is a set of strings all of which are chosen from some alphabet Σ∗, where Σ is an alphabet and ∗ denotes the set of all possible strings that can be formed from the alphabet Σ. In oth...",0.8,0.8,0.9,0.9,0.9,1.0438063144683838
+What is the difference between ∅ and {ε}?,"In the context of automata theory and formal languages, ∅ and {ε} are two distinct sets.
 
-∅ represents the empty set, which means it contains no elements at all. It is a s...",1.0,0.9,1.9319446086883545
-"Given the regular expression [A-Z][a-z]* [ ][A-Z][A-Z], what pattern does it represent and what is its limitation?","The regular expression [A-Z][a-z]* [ ][A-Z][A-Z] represents a pattern of capitalized words followed by a space and two capital letters. This pattern can be used to match city and state abbreviations, ...",0.9,0.8,1.2019307613372803
-List three software applications using automata.,"Based on the provided context, three software applications using automata are:
+∅ represents the empty set, which contains no elements. In the context of strings, this means that ∅ is the se...",0.8,0.8,0.9,0.8,0.8,1.0938854217529297
+"Given the regular expression [A-Z][a-z]* [ ][A-Z][A-Z], what pattern does it represent and what is its limitation?","The given regular expression is [A-Z][a-z]* [ ][A-Z][A-Z]. 
 
-1. Software for scanning large bodies of text, such as collections of Web pages, to find occurrences of words, phrases o...",1.0,0.8,1.0832111835479736
+This regular expression represents a pattern of a string that consists of:
+
+1. A capital letter ([A-Z])
+2. Zero or more lowercase letters (...",0.5,0.5,0.8,0.5,0.8,7.28878116607666
+List three software applications using automata.,"Based on the provided context, here are three software applications that use automata:
+
+1. **Software for scanning large bodies of text**: This type of software uses automata to find occurrences of wo...",0.6,0.6,0.8,0.8,0.8,12.251809120178223

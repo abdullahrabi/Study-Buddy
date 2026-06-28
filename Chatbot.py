@@ -484,7 +484,7 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
 
         # Use Llama 4 Scout (available and has good tool support)
         llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="qwen/qwen3.6-27b",
             temperature=0.3,
             groq_api_key=GROQ_API_KEY
         )
@@ -563,7 +563,7 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             
             # Use a simpler model for fallback
             fallback_llm = ChatGroq(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                model="qwen/qwen3.6-27b",
                 temperature=0.5,
                 groq_api_key=GROQ_API_KEY
             )
