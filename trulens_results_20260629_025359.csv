@@ -1,0 +1,17 @@
+question,answer,relevance,quality,groundedness,context_relevance,correctness,latency,run_id,strategy
+What is an alphabet in automata theory?,"In automata theory, an alphabet (denoted by Σ) is a set of symbols or characters used to form strings. It is the basic building block for constructing strings, and it can be thought of as a set of pos...",0.8,0.8,1.0,0.95,1.0,4.409824371337891,20260629_025359,sentence_window
+What is the symbol used to denote the empty string?,The symbol used to denote the empty string is ǫ....,0.8,0.8,0.5,0.8,1.0,1.3247249126434326,20260629_025359,sentence_window
+What is the Kleene star operator used for?,"The Kleene star operator (∗) is used to denote the closure of a language L, representing the set of strings that can be formed by taking any number of strings from L, possibly with repetitions, and co...",0.9,0.8,0.9,0.95,0.9,1.2736313343048096,20260629_025359,sentence_window
+What is a formal language?,"A formal language is a set of strings chosen from a given alphabet Σ. It is denoted as L ⊆ Σ∗, where L is a subset of the set of all possible strings that can be formed from the alphabet Σ. In other w...",0.8,0.8,0.9,0.9,0.9,1.4902997016906738,20260629_025359,sentence_window
+What is the difference between ∅ and {ε}?,"In the context of formal languages and automata theory, ∅ (the empty set) and {ε} (a set containing only the empty string ε) are two distinct concepts.
+
+∅ represents the empty set, which contains no e...",0.8,0.8,0.9,0.8,0.8,1.6381654739379883,20260629_025359,sentence_window
+"Given the regular expression [A-Z][a-z]* [ ][A-Z][A-Z], what pattern does it represent and what is its limitation?","The given regular expression is [A-Z][a-z]* [ ][A-Z][A-Z]. 
+
+To break it down:
+
+- [A-Z] represents any uppercase letter (A-Z) as the first character.
+- [a-z]* represents any string of lowercase letter...",0.8,0.8,0.8,0.5,0.5,5.634873390197754,20260629_025359,sentence_window
+List three software applications using automata.,"Based on the provided context, three software applications using automata are:
+
+1. **Software for scanning large bodies of text**: This includes software that scans collections of Web pages to find oc...",0.5,0.8,0.8,0.5,0.5,12.183212518692017,20260629_025359,sentence_window

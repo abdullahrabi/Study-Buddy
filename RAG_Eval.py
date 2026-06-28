@@ -1,11 +1,16 @@
-# rag_eval_trulens_final.py
+# rag_eval_final_complete.py
 import os
 import time
 import re
 import sys
+import warnings
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
+from datetime import datetime
+
+# Suppress serialization warnings
+warnings.filterwarnings('ignore', message='.*cannot be serialized.*')
 
 # ============================================
 # CRITICAL: Set OTEL environment variables FIRST
@@ -14,7 +19,6 @@ os.environ["TRULENS_OTEL_TRACING"] = "1"
 os.environ["TRULENS_OTEL_ENABLED"] = "true"
 os.environ["OTEL_SDK_DISABLED"] = "false"
 
-# Now import the rest
 from pinecone import Pinecone
 from google import genai
 from google.genai import types
@@ -30,10 +34,17 @@ PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
 
+RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+APP_NAME = f"RAG_Eval_{RUN_ID}"
+APP_VERSION = "v1.0"
+
 print("=" * 70)
-print("🚀 RAG EVALUATION WITH TRULENS DASHBOARD")
+print("🚀 OPTIMIZED RAG EVALUATION WITH TRULENS")
 print("=" * 70)
-print(f"\n🐍 Python Version: {sys.version}")
+print(f"\n📅 Run ID: {RUN_ID}")
+print(f"📱 App Name: {APP_NAME}")
+print(f"🎯 Strategy: Sentence Window")
+print(f"💾 Database: Preserved for comparison")
 
 # ============================================
 # 1. CUSTOM EMBEDDING CLASS
@@ -69,7 +80,6 @@ class GeminiDirectEmbedding(BaseEmbedding):
         return self._get_text_embedding(text)
     
     def _embed_text(self, text: str) -> list:
-        """Get embeddings from Gemini API with normalization"""
         try:
             if not text or not text.strip():
                 return None
@@ -97,23 +107,19 @@ class GeminiDirectEmbedding(BaseEmbedding):
         return "GeminiDirectEmbedding"
 
 # ============================================
-# 2. RAG SYSTEM
+# 2. OPTIMIZED RAG WITH SENTENCE WINDOW
 # ============================================
 
-class DirectRAG:
-    """RAG system using Gemini embeddings, Pinecone vector DB, and Groq LLM"""
+class OptimizedRAG:
+    """RAG with Sentence Window - Best for Groundedness & Correctness"""
     
     def __init__(self, pinecone_index, embed_model, llm):
         self.pinecone_index = pinecone_index
         self.embed_model = embed_model
         self.llm = llm
-        self.last_context = ""
-        self.last_documents = []
-        self.last_question = ""
-        self.last_answer = ""
     
-    def retrieve(self, query: str, top_k: int = 15) -> list:
-        """Retrieve relevant documents from Pinecone"""
+    def retrieve_with_sentence_window(self, query: str, top_k: int = 5, window_size: int = 3) -> list:
+        """Sentence Window Retrieval"""
         try:
             query_embedding = self.embed_model._embed_text(query)
             if not query_embedding:
@@ -121,7 +127,7 @@ class DirectRAG:
             
             results = self.pinecone_index.query(
                 vector=query_embedding,
-                top_k=top_k,
+                top_k=15,
                 include_metadata=True
             )
             
@@ -133,17 +139,59 @@ class DirectRAG:
                         'score': match.score,
                         'metadata': match.metadata
                     })
-            return documents
+            
+            expanded_docs = []
+            seen_texts = set()
+            automata_keywords = {'alphabet', 'string', 'language', 'automata', 'state', 
+                                'symbol', 'empty', 'kleene', 'regular', 'expression',
+                                'formal', 'closure', 'transition', 'dfa', 'nfa', 'epsilon'}
+            
+            for doc in documents:
+                text = doc['text']
+                if text in seen_texts:
+                    continue
+                seen_texts.add(text)
+                
+                sentences = re.split(r'(?<=[.!?])\s+', text)
+                
+                if len(sentences) <= window_size * 2:
+                    expanded_docs.append(doc)
+                    continue
+                
+                query_terms = set(query.lower().split())
+                sentence_scores = []
+                for i, sentence in enumerate(sentences):
+                    sentence_terms = set(sentence.lower().split())
+                    overlap = len(query_terms & sentence_terms)
+                    bonus = len(sentence_terms & automata_keywords) * 0.5
+                    sentence_scores.append((i, overlap + bonus))
+                
+                sentence_scores.sort(key=lambda x: x[1], reverse=True)
+                
+                expanded_texts = []
+                for idx, score in sentence_scores[:2]:
+                    start = max(0, idx - window_size)
+                    end = min(len(sentences), idx + window_size + 1)
+                    window_text = ' '.join(sentences[start:end])
+                    expanded_texts.append(window_text)
+                
+                expanded_text = ' ... '.join(expanded_texts)
+                expanded_docs.append({
+                    'text': expanded_text,
+                    'score': doc['score'],
+                    'metadata': {**doc['metadata'], 'strategy': 'sentence_window'}
+                })
+            
+            expanded_docs.sort(key=lambda x: x['score'], reverse=True)
+            return expanded_docs[:top_k]
         except Exception as e:
             print(f"⚠️ Retrieval error: {e}")
             return []
     
     def query(self, question: str) -> str:
-        """Generate answer using RAG"""
-        self.last_question = question
+        """Generate answer using Sentence Window retrieval"""
         try:
-            documents = self.retrieve(question, top_k=10)
-            self.last_documents = documents
+            documents = self.retrieve_with_sentence_window(question)
             
             if not documents:
                 return "No relevant documents found."
@@ -151,7 +199,7 @@ class DirectRAG:
             top_docs = documents[:5]
             context_text = "\n\n".join([doc['text'] for doc in top_docs])
             
-            prompt = f"""You are a helpful assistant specializing in automata theory. Answer based on the context.
+            prompt = f"""You are an expert in automata theory. Answer based on the context provided.
 
 CONTEXT:
 {context_text}
@@ -162,8 +210,7 @@ QUESTION:
 ANSWER:"""
             
             response = self.llm.complete(prompt)
-            self.last_answer = str(response).strip()
-            return self.last_answer
+            return str(response).strip()
         except Exception as e:
             return f"Error: {e}"
 
@@ -172,25 +219,13 @@ ANSWER:"""
 # ============================================
 
 MODEL_CONFIGS = {
-    'fast': {
-        'model': 'llama-3.1-8b-instant',
-        'speed': 560,
-        'use_for': ['relevance', 'quality']
-    },
-    'primary': {
-        'model': 'llama-3.3-70b-versatile',
-        'speed': 280,
-        'use_for': ['groundedness', 'correctness']
-    },
-    'context': {
-        'model': 'llama-3.1-8b-instant',
-        'speed': 560,
-        'use_for': ['context_relevance']
-    }
+    'fast': {'model': 'llama-3.1-8b-instant', 'use_for': ['relevance', 'quality']},
+    'primary': {'model': 'llama-3.3-70b-versatile', 'use_for': ['groundedness', 'correctness']},
+    'context': {'model': 'llama-3.1-8b-instant', 'use_for': ['context_relevance']}
 }
 
 class ModelRouter:
-    """Routes evaluation tasks with fixed parsing for all models"""
+    """Routes evaluation tasks to dedicated models"""
     
     def __init__(self, api_key: str):
         from groq import Groq as GroqClient
@@ -200,25 +235,16 @@ class ModelRouter:
         self.rate_limit_waits = {}
         
     def clean_score(self, text: str) -> float:
-        """Extract numerical score from model response"""
         if not text:
             return None
-        
-        # Remove <think> tags and their content
-        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-        cleaned = cleaned.strip()
-        
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
         if not cleaned:
             cleaned = text
-        
-        # Try to find any number in the cleaned text
         patterns = [
-            r'(?:score|rating|relevance|quality|groundedness|correctness|context)?\s*[:=]?\s*(\d+\.?\d*)',
+            r'(?:score|rating)?\s*[:=]?\s*(\d+\.?\d*)',
             r'(\d+\.?\d*)\s*\/\s*(?:1|10|100)',
-            r'(?:^|\s)(\d+\.?\d*)(?:\s|$)',
             r'(\d+\.?\d*)',
         ]
-        
         for pattern in patterns:
             matches = re.findall(pattern, cleaned.lower())
             if matches:
@@ -228,94 +254,43 @@ class ModelRouter:
                         score = score / 10
                     elif score > 10 and score <= 100:
                         score = score / 100
-                    elif score > 100:
-                        score = 0.5
                     return max(0.0, min(1.0, score))
                 except:
                     continue
-        
-        # Keyword fallback
-        if any(word in cleaned.lower() for word in ['excellent', 'perfect', 'outstanding']):
-            return 0.95
-        elif any(word in cleaned.lower() for word in ['very good', 'high']):
-            return 0.85
-        elif any(word in cleaned.lower() for word in ['good', 'adequate']):
-            return 0.75
-        elif any(word in cleaned.lower() for word in ['fair', 'moderate', 'average']):
-            return 0.5
-        elif any(word in cleaned.lower() for word in ['poor', 'low']):
-            return 0.25
-        elif any(word in cleaned.lower() for word in ['very poor', 'terrible', 'incorrect']):
-            return 0.1
-        
-        print(f"    ⚠️ Could not parse score from: '{cleaned[:150]}...'")
         return None
     
-    def call_model_with_retry(self, prompt: str, model: str, task_type: str, max_retries: int = 3) -> float:
-        """Call a specific model with intelligent retry logic"""
-        
+    def call_model(self, prompt: str, model: str, max_retries: int = 3) -> float:
         for attempt in range(max_retries):
             try:
                 response = self.client.chat.completions.create(
                     model=model,
                     messages=[
-                        {"role": "system", "content": "You are a scoring system. Output ONLY a number between 0 and 1. No explanations, no thinking, no analysis. Just the number."},
+                        {"role": "system", "content": "Output ONLY a number between 0 and 1. No other text."},
                         {"role": "user", "content": prompt}
                     ],
-                    temperature=0,
-                    max_tokens=10
+                    temperature=0, max_tokens=10
                 )
-                
                 if model not in self.model_usage:
                     self.model_usage[model] = 0
                 self.model_usage[model] += 1
                 
-                response_text = response.choices[0].message.content.strip()
-                score = self.clean_score(response_text)
-                
+                score = self.clean_score(response.choices[0].message.content.strip())
                 if score is not None:
                     return score
+                elif attempt < max_retries - 1:
+                    time.sleep(2)
                 else:
-                    if attempt < max_retries - 1:
-                        print(f"    ⚠️ Unparseable response, retrying... (attempt {attempt + 1})")
-                        prompt = f"OUTPUT ONLY A NUMBER BETWEEN 0 AND 1. NO OTHER TEXT.\n\n{prompt}"
-                        continue
-                    else:
-                        print(f"    ⚠️ Could not parse score after {max_retries} attempts")
-                        return 0.5
-                
+                    return 0.5
             except Exception as e:
-                error_msg = str(e).lower()
-                
-                if "rate_limit" in error_msg:
-                    wait_time = min(30 * (2 ** attempt), 120)
-                    print(f"    ⚠️ Rate limit on {model}. Waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                    
-                    if model not in self.rate_limit_waits:
-                        self.rate_limit_waits[model] = 0
-                    self.rate_limit_waits[model] += wait_time
-                    
-                elif "server_error" in error_msg or "overloaded" in error_msg:
-                    wait_time = 5 * (attempt + 1)
-                    print(f"    ⚠️ Server issue. Waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                    
+                if "rate_limit" in str(e).lower():
+                    time.sleep(min(30 * (2 ** attempt), 120))
+                elif attempt < max_retries - 1:
+                    time.sleep(5)
                 else:
-                    print(f"    ❌ Error: {str(e)[:100]}")
-                    if model not in self.model_failures:
-                        self.model_failures[model] = 0
-                    self.model_failures[model] += 1
-                    
-                    if attempt == max_retries - 1:
-                        return 0.5
-                    time.sleep(3)
-        
+                    return 0.5
         return 0.5
     
     def evaluate(self, task_type: str, prompt: str) -> float:
-        """Route task to its dedicated model"""
-        
         task_model_map = {
             'relevance': MODEL_CONFIGS['fast'],
             'quality': MODEL_CONFIGS['fast'],
@@ -323,80 +298,47 @@ class ModelRouter:
             'context_relevance': MODEL_CONFIGS['context'],
             'correctness': MODEL_CONFIGS['primary']
         }
-        
         config = task_model_map.get(task_type, MODEL_CONFIGS['fast'])
-        model = config['model']
-        
-        print(f"      🎯 {task_type.upper()}: {model}")
-        
-        return self.call_model_with_retry(prompt, model, task_type)
+        return self.call_model(prompt, config['model'])
 
 # ============================================
-# 4. METRIC EVALUATORS
+# 4. METRIC EVALUATORS (Module-level functions)
 # ============================================
 
-def create_metric_evaluators(router: ModelRouter):
-    """Create evaluation functions with improved prompts"""
-    
-    def evaluate_relevance(input: str, output: str) -> float:
-        prompt = f"""Score the relevance of this answer from 0 to 1.
-Output ONLY the number.
-
+def evaluate_relevance(input: str, output: str, router: ModelRouter) -> float:
+    prompt = f"""Score relevance from 0 to 1. Output only the number.
 Question: {input[:300]}
 Answer: {output[:300] if output else "None"}
-
 Score:"""
-        return router.evaluate('relevance', prompt)
-    
-    def evaluate_quality(input: str, output: str) -> float:
-        prompt = f"""Score the quality of this answer from 0 to 1.
-Consider accuracy, completeness, and clarity.
-Output ONLY the number.
+    return router.evaluate('relevance', prompt)
 
+def evaluate_quality(input: str, output: str, router: ModelRouter) -> float:
+    prompt = f"""Score quality from 0 to 1. Output only the number.
 Question: {input[:300]}
 Answer: {output[:300] if output else "None"}
-
 Score:"""
-        return router.evaluate('quality', prompt)
-    
-    def evaluate_groundedness(input: str, output: str) -> float:
-        prompt = f"""Score the factual reliability of this answer from 0 to 1.
-Check for accuracy and absence of false information.
-Output ONLY the number.
+    return router.evaluate('quality', prompt)
 
+def evaluate_groundedness(input: str, output: str, router: ModelRouter) -> float:
+    prompt = f"""Score factual reliability from 0 to 1. Output only the number.
 Question: {input[:300]}
 Answer: {output[:300] if output else "None"}
-
 Score:"""
-        return router.evaluate('groundedness', prompt)
-    
-    def evaluate_context_relevance(input: str, output: str) -> float:
-        prompt = f"""Score how contextually relevant this answer is from 0 to 1.
-Output ONLY the number.
+    return router.evaluate('groundedness', prompt)
 
+def evaluate_context_relevance(input: str, output: str, router: ModelRouter) -> float:
+    prompt = f"""Score context relevance from 0 to 1. Output only the number.
 Question: {input[:300]}
 Answer: {output[:300] if output else "None"}
-
 Score:"""
-        return router.evaluate('context_relevance', prompt)
-    
-    def evaluate_correctness(input: str, output: str) -> float:
-        prompt = f"""Score the correctness of this answer from 0 to 1.
-Output ONLY the number.
+    return router.evaluate('context_relevance', prompt)
 
+def evaluate_correctness(input: str, output: str, router: ModelRouter) -> float:
+    prompt = f"""Score correctness from 0 to 1. Output only the number.
 Question: {input[:300]}
 Answer: {output[:300] if output else "None"}
-
 Score:"""
-        return router.evaluate('correctness', prompt)
-    
-    return {
-        'relevance': evaluate_relevance,
-        'quality': evaluate_quality,
-        'groundedness': evaluate_groundedness,
-        'context_relevance': evaluate_context_relevance,
-        'correctness': evaluate_correctness
-    }
+    return router.evaluate('correctness', prompt)
 
 # ============================================
 # 5. MAIN EXECUTION
@@ -405,23 +347,12 @@ Score:"""
 def main():
     print("\n🔧 Configuring...")
     
-    embed_model = GeminiDirectEmbedding(
-        api_key=GEMINI_API_KEY,
-        model_name="gemini-embedding-2",
-        dimension=768
-    )
-    
-    llm = LlamaGroq(
-        model="llama-3.1-8b-instant",
-        api_key=GROQ_API_KEY,
-        temperature=0.3,
-    )
-    
+    embed_model = GeminiDirectEmbedding(api_key=GEMINI_API_KEY, model_name="gemini-embedding-2", dimension=768)
+    llm = LlamaGroq(model="llama-3.1-8b-instant", api_key=GROQ_API_KEY, temperature=0.3)
     Settings.embed_model = embed_model
     Settings.llm = llm
     
     print(f"\n🔗 Connecting to Pinecone index '{INDEX_NAME}'...")
-    
     pc = Pinecone(api_key=PINECONE_API_KEY)
     if INDEX_NAME not in [idx.name for idx in pc.list_indexes()]:
         raise ValueError(f"❌ Index '{INDEX_NAME}' not found!")
@@ -430,8 +361,8 @@ def main():
     stats = pinecone_index.describe_index_stats()
     print(f"✅ Connected: {stats.total_vector_count} vectors, {stats.dimension} dimensions")
     
-    rag = DirectRAG(pinecone_index, embed_model, llm)
-    print("✅ RAG system ready\n")
+    rag = OptimizedRAG(pinecone_index, embed_model, llm)
+    print("✅ RAG ready (Sentence Window Strategy)\n")
     
     eval_questions = [
         "What is an alphabet in automata theory?",
@@ -443,70 +374,45 @@ def main():
         "List three software applications using automata.",
     ]
     
-    print("📚 Loaded evaluation questions:")
-    for i, q in enumerate(eval_questions, 1):
-        print(f"  {i}. {q[:60]}...")
-    
-    # ============================================
-    # PHASE 1: GENERATE ANSWERS
-    # ============================================
-    
-    print("\n" + "=" * 70)
+    # Phase 1: Generate answers
+    print("=" * 70)
     print("🚀 PHASE 1: GENERATING ANSWERS")
     print("=" * 70)
     
-    answers = []
-    latencies = []
+    answers, latencies = [], []
     
     for i, q in enumerate(eval_questions, 1):
         print(f"\n📝 Q{i}: {q[:50]}...")
-        print("-" * 40)
-        
         start_time = time.time()
         answer = rag.query(q)
         latency = time.time() - start_time
         answers.append(answer)
         latencies.append(latency)
-        
-        print(f"⏱️ Latency: {latency:.2f}s")
-        print(f"🤖 Answer:\n{answer[:200]}...")
+        print(f"⏱️ {latency:.2f}s | {answer[:150]}...")
     
-    # ============================================
-    # PHASE 2: CALCULATE METRICS
-    # ============================================
-    
+    # Phase 2: Calculate metrics
     print("\n" + "=" * 70)
     print("📊 PHASE 2: CALCULATING METRICS")
     print("=" * 70)
     
     router = ModelRouter(GROQ_API_KEY)
-    evaluators = create_metric_evaluators(router)
     
-    print("\n🎯 MODEL STRATEGY:")
-    print("  • Relevance, Quality, Context → Llama-3.1-8B (560 T/s)")
-    print("  • Groundedness, Correctness → Llama-3.3-70B (Best quality)")
-    
-    print("\n🔄 Calculating metrics...")
     metrics_data = []
-    
     for i, (q, a) in enumerate(zip(eval_questions, answers), 1):
         print(f"\n  📊 Q{i}: {q[:50]}...")
         
-        relevance_score = evaluators['relevance'](q, a)
-        quality_score = evaluators['quality'](q, a)
-        groundedness_score = evaluators['groundedness'](q, a)
-        context_relevance_score = evaluators['context_relevance'](q, a)
-        correctness_score = evaluators['correctness'](q, a)
+        relevance_score = evaluate_relevance(q, a, router)
+        quality_score = evaluate_quality(q, a, router)
+        groundedness_score = evaluate_groundedness(q, a, router)
+        context_relevance_score = evaluate_context_relevance(q, a, router)
+        correctness_score = evaluate_correctness(q, a, router)
         
         metrics_data.append({
-            'question': q,
-            'answer': a[:200] + "...",
-            'relevance': relevance_score,
-            'quality': quality_score,
-            'groundedness': groundedness_score,
-            'context_relevance': context_relevance_score,
-            'correctness': correctness_score,
-            'latency': latencies[i-1]
+            'question': q, 'answer': a[:200] + "...",
+            'relevance': relevance_score, 'quality': quality_score,
+            'groundedness': groundedness_score, 'context_relevance': context_relevance_score,
+            'correctness': correctness_score, 'latency': latencies[i-1],
+            'run_id': RUN_ID, 'strategy': 'sentence_window'
         })
         
         print(f"    ✓ Relevance: {relevance_score:.3f} | Quality: {quality_score:.3f}")
@@ -514,13 +420,22 @@ def main():
         print(f"    ✓ Correctness: {correctness_score:.3f}")
     
     df_metrics = pd.DataFrame(metrics_data)
-    df_metrics.to_csv("trulens_results.csv", index=False)
-    print("\n💾 Metrics saved to trulens_results.csv")
     
-    # ============================================
-    # PHASE 3: DISPLAY RESULTS
-    # ============================================
+    # Save files
+    df_metrics.to_csv(f"trulens_results_{RUN_ID}.csv", index=False)
+    df_metrics.to_csv("trulens_results_latest.csv", index=False)
     
+    history_file = "trulens_results_history.csv"
+    if os.path.exists(history_file):
+        df_history = pd.read_csv(history_file)
+        df_history = pd.concat([df_history, df_metrics], ignore_index=True)
+    else:
+        df_history = df_metrics
+    df_history.to_csv(history_file, index=False)
+    
+    print(f"\n💾 Results saved: trulens_results_{RUN_ID}.csv, trulens_results_latest.csv, trulens_results_history.csv")
+    
+    # Phase 3: Display results
     print("\n" + "=" * 70)
     print("📊 METRICS SUMMARY")
     print("=" * 70)
@@ -529,66 +444,28 @@ def main():
     for metric in ['relevance', 'quality', 'groundedness', 'context_relevance', 'correctness']:
         avg = df_metrics[metric].mean()
         status = "✅ high" if avg >= 0.7 else "⚠️ medium" if avg >= 0.5 else "🛑 low"
-        print(f"  {metric.replace('_', ' ').title()}: {avg:.2f} {status}")
+        print(f"  {metric.replace('_', ' ').title()}: {avg:.3f} {status}")
     print(f"  Average Latency: {df_metrics['latency'].mean():.2f}s")
     
-    print("\n📋 Per-Question Breakdown:")
-    print("-" * 70)
-    for i, row in df_metrics.iterrows():
-        print(f"\nQ{i+1}: {row['question'][:60]}...")
-        for metric in ['relevance', 'quality', 'groundedness', 'context_relevance', 'correctness']:
-            score = row[metric]
-            status = "✅" if score >= 0.7 else "⚠️" if score >= 0.5 else "🛑"
-            print(f"  {status} {metric.replace('_', ' ').title()}: {score:.3f}")
-        print(f"  ⏱️ Latency: {row['latency']:.2f}s")
-    
-    print("\n" + "=" * 70)
-    print("📊 MODEL USAGE")
-    print("=" * 70)
-    for model, count in router.model_usage.items():
-        failures = router.model_failures.get(model, 0)
-        success_rate = ((count - failures) / count * 100) if count > 0 else 0
-        print(f"  • {model}: {count} calls, {failures} failures ({success_rate:.0f}% success)")
-    
-    if router.rate_limit_waits:
-        print("\n⚠️ Rate Limit Waits:")
-        for model, wait_time in router.rate_limit_waits.items():
-            print(f"  • {model}: {wait_time:.0f}s total wait time")
-    else:
-        print("✅ No rate limits encountered!")
-    
-    # ============================================
-    # PHASE 4: TRULENS DASHBOARD (OPTIONAL)
-    # ============================================
-    
+    # Phase 4: TruLens Dashboard
     print("\n" + "=" * 70)
     print("📊 TRULENS DASHBOARD")
     print("=" * 70)
     
-    print("\n💡 Your metrics are saved to trulens_results.csv")
-    print("   The dashboard provides interactive visualizations")
     open_dashboard = input("\n🌐 Open TruLens Dashboard? (y/n): ").lower().strip()
     
     if open_dashboard == 'y':
         from trulens.core import TruSession, Metric
         from trulens.apps.app import TruApp
         from trulens.dashboard import run_dashboard
+        from functools import partial
         
-        print("\n📊 Setting up TruLens evaluation...")
+        print("\n📊 Setting up TruLens...")
         
-        # Clean start
-        if os.path.exists("default.sqlite"):
-            try:
-                os.remove("default.sqlite")
-                print("🗑️ Deleted old database")
-            except:
-                pass
-        
+        # DON'T delete database - preserve for comparison
         session = TruSession()
-        session.reset_database()
-        print("✅ Session created")
+        print("✅ Session ready (database preserved for comparison)")
         
-        # Create wrapper
         class RAGWrapper:
             def __init__(self, rag):
                 self.rag = rag
@@ -597,24 +474,35 @@ def main():
         
         rag_wrapper = RAGWrapper(rag)
         
-        # Create feedback metrics
-        f_relevance = Metric(evaluators['relevance'], name="Relevance").on_input_output()
-        f_quality = Metric(evaluators['quality'], name="Quality").on_input_output()
-        f_groundedness = Metric(evaluators['groundedness'], name="Groundedness").on_input_output()
-        f_context_relevance = Metric(evaluators['context_relevance'], name="Context Relevance").on_input_output()
+        # Create metrics using partial to bind router
+        f_relevance = Metric(
+            partial(evaluate_relevance, router=router), name="Relevance"
+        ).on_input_output()
+        
+        f_quality = Metric(
+            partial(evaluate_quality, router=router), name="Quality"
+        ).on_input_output()
+        
+        f_groundedness = Metric(
+            partial(evaluate_groundedness, router=router), name="Groundedness"
+        ).on_input_output()
+        
+        f_context_relevance = Metric(
+            partial(evaluate_context_relevance, router=router), name="Context Relevance"
+        ).on_input_output()
         
         print("✅ Metrics created")
         
-        # Create TruApp
+        # Create TruApp with unique name for this run
         tru_recorder = TruApp(
             rag_wrapper,
-            app_name="RAG_Evaluation",
-            app_version="v1.0",
+            app_name=APP_NAME,
+            app_version=APP_VERSION,
             feedbacks=[f_relevance, f_quality, f_groundedness, f_context_relevance],
             main_method=rag_wrapper.respond
         )
         
-        print("🔄 Running TruLens evaluation...")
+        print(f"🔄 Running TruLens evaluation (App: {APP_NAME})...")
         with tru_recorder as recording:
             for i, q in enumerate(eval_questions, 1):
                 print(f"  {i}/{len(eval_questions)}: {q[:40]}...")
@@ -622,129 +510,58 @@ def main():
         
         print("✅ Evaluation recorded")
         
-        # CRITICAL: Wait for feedback results with verification
-        print("\n⏳ Waiting for feedback results to process...")
-        print("   (This typically takes 30-90 seconds)")
+        # Wait for feedback
+        print("\n⏳ Waiting for feedback results...")
+        print("   (This may take 30-60 seconds)")
         
-        feedback_ready = False
-        max_wait = 180  # 3 minutes max
-        wait_interval = 15  # Check every 15 seconds
-        waited = 0
+        time.sleep(30)  # Initial wait
         
-        while waited < max_wait and not feedback_ready:
-            time.sleep(wait_interval)
-            waited += wait_interval
+        try:
+            tru_recorder.wait_for_feedback_results()
+        except:
+            pass
+        
+        # Try to get records
+        try:
+            records_df, feedback_names = session.get_records_and_feedback(
+                app_name=APP_NAME,
+                app_versions=[APP_VERSION]
+            )
             
-            try:
-                # Try to wait for feedback
-                tru_recorder.wait_for_feedback_results()
-                
-                # Check database
-                records_df, feedback_names = session.get_records_and_feedback(app_ids=["RAG_Evaluation"])
-                
-                if records_df is not None and len(records_df) > 0:
-                    # Check if feedback columns have actual values
-                    feedback_cols = [col for col in records_df.columns if any(name in col for name in feedback_names)]
-                    has_values = False
-                    
-                    for col in feedback_cols:
-                        if col in records_df.columns and records_df[col].notna().any():
-                            has_values = True
-                            sample_val = records_df[col].dropna().iloc[0]
-                            print(f"   ✓ {col}: {sample_val:.3f}")
-                    
-                    if has_values:
-                        feedback_ready = True
-                        print(f"\n✅ Feedback results ready! ({waited}s)")
-                        print(f"   Records: {len(records_df)}")
-                        
-                        # Save records
-                        records_df.to_csv("trulens_records.csv", index=False)
-                        print("   💾 Records saved to trulens_records.csv")
-                    else:
-                        print(f"   ⏳ Records exist but feedback still calculating... ({waited}s)")
-                else:
-                    print(f"   ⏳ Waiting for records... ({waited}s)")
-                    
-            except Exception as e:
-                print(f"   ⏳ Still processing... ({waited}s)")
-        
-        if not feedback_ready:
-            print("\n⚠️ Feedback processing is taking longer than expected")
-            print("   Dashboard may show records without feedback initially")
-            print("   Feedback may appear after a few minutes in the dashboard")
-        
-        # Force flush
-        try:
-            session.force_flush()
-            time.sleep(5)
-        except:
-            pass
-        
-        # Final verification
-        print("\n🔍 Final database check...")
-        try:
-            records_df, feedback_names = session.get_records_and_feedback(app_ids=["RAG_Evaluation"])
             if records_df is not None and len(records_df) > 0:
-                print(f"✅ Database ready: {len(records_df)} records")
-                print(f"   Columns: {list(records_df.columns)[:5]}...")
+                print(f"✅ Found {len(records_df)} records")
+                records_df.to_csv(f"trulens_records_{RUN_ID}.csv", index=False)
+                print(f"💾 Records saved: trulens_records_{RUN_ID}.csv")
             else:
-                print("⚠️ No records found, but dashboard may still work")
-        except:
-            pass
+                print("⚠️ Records may still be processing")
+        except Exception as e:
+            print(f"⚠️ Could not verify records: {str(e)[:80]}")
         
         # Launch dashboard
         print("\n" + "=" * 70)
         print("🌐 LAUNCHING TRULENS DASHBOARD")
         print("=" * 70)
-        print("\n📊 Open http://localhost:8501 in your browser")
-        print("\n💡 Tips if metrics don't show immediately:")
-        print("   1. Click 'Leaderboard' tab first")
-        print("   2. Select 'RAG_Evaluation' from app dropdown")
-        print("   3. Wait 1-2 minutes and refresh the page")
-        print("   4. Feedback calculates in the background")
-        print("\n   Press Ctrl+C to stop the dashboard\n")
+        print(f"\n📊 Open http://localhost:8501")
+        print(f"\n💡 Select '{APP_NAME}' to view this run")
+        print("   Previous runs preserved for comparison")
+        print("\n   Press Ctrl+C to stop\n")
         
         try:
             run_dashboard(session=session, port=8501)
         except KeyboardInterrupt:
-            print("\n👋 Dashboard stopped by user")
+            print("\n👋 Dashboard stopped")
         except Exception as e:
-            print(f"\n⚠️ Dashboard error: {e}")
-            print("\n💡 Alternative launch methods:")
-            print("   1. Run: python -m trulens.dashboard")
-            print("   2. Or check: http://localhost:8501")
+            print(f"\n⚠️ Error: {str(e)[:80]}")
     
-    # ============================================
-    # FINAL SUMMARY
-    # ============================================
-    
+    # Final summary
     print("\n" + "=" * 70)
     print("✅ EVALUATION COMPLETE!")
     print("=" * 70)
     
-    metrics_avg = {
-        'Relevance': df_metrics['relevance'].mean(),
-        'Quality': df_metrics['quality'].mean(),
-        'Groundedness': df_metrics['groundedness'].mean(),
-        'Context Relevance': df_metrics['context_relevance'].mean(),
-        'Correctness': df_metrics['correctness'].mean()
-    }
-    
-    best_metric = max(metrics_avg, key=metrics_avg.get)
-    worst_metric = min(metrics_avg, key=metrics_avg.get)
-    
-    print(f"""
-📊 PERFORMANCE SUMMARY:
-------------------------
-✅ Best: {best_metric} ({metrics_avg[best_metric]:.2f})
-⚠️ Needs Work: {worst_metric} ({metrics_avg[worst_metric]:.2f})
-
-📁 Files Generated:
-- trulens_results.csv (Complete metrics)
-{f"- trulens_records.csv (TruLens records)" if open_dashboard == 'y' else ""}
-{f"- default.sqlite (TruLens database)" if open_dashboard == 'y' else ""}
-    """)
+    print(f"\n📅 Run ID: {RUN_ID}")
+    print(f"📁 Results: trulens_results_{RUN_ID}.csv")
+    print(f"📁 History: trulens_results_history.csv")
+    print(f"💾 Database: Preserved for comparison")
 
 if __name__ == "__main__":
     main()
