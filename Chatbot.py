@@ -1,4 +1,4 @@
-# Sender.py - StudyBuddy with RAG + TruLens Evaluation API
+# Sender.py - Fixed version with proper context storage
 import os
 import json
 import time
@@ -44,7 +44,7 @@ PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
 # TruLens Evaluation API URL
-EVAL_API_URL = os.getenv("EVAL_API_URL")
+EVAL_API_URL = os.getenv("EVAL_API_URL", "https://rag-eval-for-study-buddy-production.up.railway.app")
 
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
@@ -64,6 +64,20 @@ if INDEX_NAME not in existing_indexes:
         spec=ServerlessSpec(cloud="aws", region=PINECONE_ENVIRONMENT)
     )
 index = pc.Index(INDEX_NAME)
+
+# ============================================
+# GLOBAL CONTEXT STORAGE FOR EVALUATION
+# ============================================
+_last_contexts = []  # Global variable to store contexts
+
+def get_last_contexts():
+    """Get the last contexts used"""
+    return _last_contexts
+
+def set_last_contexts(contexts):
+    """Set the last contexts used"""
+    global _last_contexts
+    _last_contexts = contexts
 
 # ---------------- TIMEZONE UTILITIES ----------------
 def get_user_timezone(timezone_str=None):
@@ -551,16 +565,13 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             """Search the user's personal notes and documents."""
             try:
                 context_str, contexts = retrieve_context(query, user_id, top_k=5)
-                # Store contexts for evaluation
-                search_notes.last_contexts = contexts
+                # Store contexts in global variable
+                set_last_contexts(contexts)
                 if context_str and "No relevant" not in context_str:
                     return f"📄 From your notes:\n\n{context_str}"
                 return "No relevant information found in your notes."
             except Exception as e:
                 return f"Error searching notes: {str(e)}"
-        
-        # Initialize context storage
-        search_notes.last_contexts = []
 
         tools = [search_notes, search_wikipedia, web_search]
 
@@ -610,16 +621,12 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
                     collected_response += content
                     yield content
                     
-                    # Get contexts from the last tool call if any
-                    if hasattr(search_notes, 'last_contexts') and search_notes.last_contexts:
-                        contexts_used = search_notes.last_contexts
-                        search_notes.last_contexts = []
-                    
         except Exception as stream_error:
             print(f"[WARNING] Agent streaming failed: {stream_error}")
             print("[INFO] Falling back to direct response...")
             
             context_str, contexts = retrieve_context(user_input, user_id, top_k=3)
+            set_last_contexts(contexts)
             contexts_used = contexts
             
             fallback_llm = ChatGroq(
@@ -645,7 +652,8 @@ Provide a clear, educational response. If the question is about current events, 
         # SEND TO TRULENS EVALUATION
         # ============================================
         if collected_response and user_input:
-            # Get context texts
+            # Get contexts from global variable
+            contexts_used = get_last_contexts()
             context_texts = [c.get('text', '') for c in contexts_used if c.get('text')]
             
             # Send for evaluation (async)
