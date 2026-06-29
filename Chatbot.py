@@ -1,3 +1,4 @@
+# Sender.py - StudyBuddy with RAG + TruLens Evaluation API
 import os
 import json
 import time
@@ -42,11 +43,13 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 
+# TruLens Evaluation API URL
+EVAL_API_URL = os.getenv("EVAL_API_URL")
+
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
 if not PINECONE_API_KEY:
     raise ValueError("❌ PINECONE_API_KEY not found!")
-
 
 # ---------------- CONFIGURE GEMINI & PINECONE ----------------
 client = genai.Client(api_key=GEMINI_API_KEY)
@@ -129,12 +132,105 @@ def format_timestamp_for_display(timestamp, user_timezone=None):
     relative_time = get_relative_time(timestamp, user_timezone)
     return f"{local_time} ({relative_time})"
 
+# ============================================
+# TRULENS EVALUATION FUNCTIONS
+# ============================================
+
+def send_for_evaluation(question: str, answer: str, contexts: list, user_id: str = None) -> dict:
+    """
+    Send question, answer, and context to TruLens evaluation API
+    
+    Args:
+        question: The user's question
+        answer: The generated answer
+        contexts: List of context strings used
+        user_id: Optional user identifier
+    
+    Returns:
+        dict: Evaluation response from the API
+    """
+    try:
+        payload = {
+            "question": question,
+            "answer": answer,
+            "contexts": contexts if contexts else [],
+            "user_id": user_id
+        }
+        
+        print(f"\n📤 Sending to evaluation: {question[:50]}...")
+        
+        response = requests.post(
+            f"{EVAL_API_URL}/evaluate",
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ Evaluation successful! Status: {result.get('status', 'unknown')}")
+            return result
+        else:
+            print(f"⚠️ Evaluation API returned {response.status_code}: {response.text}")
+            return {"error": f"API returned {response.status_code}", "status": "error"}
+            
+    except requests.exceptions.Timeout:
+        print("⚠️ Evaluation API timeout")
+        return {"error": "Timeout", "status": "error"}
+    except requests.exceptions.ConnectionError:
+        print("⚠️ Cannot connect to Evaluation API")
+        return {"error": "Connection error", "status": "error"}
+    except Exception as e:
+        print(f"⚠️ Evaluation API error: {e}")
+        return {"error": str(e), "status": "error"}
+
+def send_batch_for_evaluation(evaluations: list) -> dict:
+    """
+    Send multiple evaluations in batch
+    
+    Args:
+        evaluations: List of dicts with 'question', 'answer', 'contexts'
+    
+    Returns:
+        dict: Batch evaluation response
+    """
+    try:
+        payload = {"questions": evaluations}
+        
+        response = requests.post(
+            f"{EVAL_API_URL}/evaluate_batch",
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"API returned {response.status_code}", "status": "error"}
+            
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
+def get_evaluation_results() -> dict:
+    """Get all evaluation results from the API"""
+    try:
+        response = requests.get(
+            f"{EVAL_API_URL}/results",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"API returned {response.status_code}", "status": "error"}
+            
+    except Exception as e:
+        return {"error": str(e), "status": "error"}
+
 # ---------------- IMPROVED EMBEDDING FUNCTION ----------------
 def embed_text(text: str):
     try:
         if not text or not text.strip():
             print("[WARNING] Empty text provided for embedding")
-            # Return a random vector with some pattern
             import hashlib
             hash_val = int(hashlib.md5(str(time.time()).encode()).hexdigest()[:8], 16)
             random.seed(hash_val)
@@ -173,7 +269,6 @@ def embed_text(text: str):
             else:
                 emb = emb[:768]
         
-        # Normalize the vector
         norm = sum(v**2 for v in emb) ** 0.5
         if norm > 0:
             emb = [v / norm for v in emb]
@@ -191,21 +286,18 @@ def embed_text(text: str):
         return [random.uniform(0.01, 0.02) for _ in range(768)]
 
 # ---------------- IMPROVED RAG CONTEXT RETRIEVAL ----------------
-def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
+def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> tuple:
     """
-    Retrieve relevant context from Pinecone with improved handling.
-    Returns context string or helpful message if no context found.
+    Retrieve relevant context from Pinecone.
+    Returns: (context_string, contexts_list)
     """
     try:
-        # Generate embedding for the query
         q_emb = embed_text(query)
         
-        # Prepare filter
         filter_dict = {}
         if user_id:
             filter_dict["user_id"] = {"$eq": user_id}
         
-        # Query Pinecone
         if filter_dict:
             resp = index.query(
                 vector=q_emb, 
@@ -222,18 +314,14 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
                 include_values=False
             )
         
-        # Debug: Check what's returned
         matches = getattr(resp, "matches", [])
         print(f"  [DEBUG] Found {len(matches)} matches for: {query[:30]}...")
         
         if not matches:
-            print(f"  [DEBUG] No matches found at all!")
-            return "No relevant information found in the knowledge base."
+            return "No relevant information found.", []
         
-        # Collect contexts with lower threshold
         contexts = []
         seen_texts = set()
-        source_info = []
         
         for match in matches:
             meta = match.metadata or {}
@@ -241,60 +329,35 @@ def retrieve_context(query: str, user_id: str = None, top_k: int = 5) -> str:
             score = match.score or 0
             source = meta.get("type", meta.get("source", "unknown"))
             
-            # DEBUG: Show scores
-            print(f"  [DEBUG] Score: {score:.3f} - Source: {source} - Text length: {len(text)}")
-            
-            # Lower threshold to 0.1 to catch more results
             if text and score > 0.1 and text not in seen_texts:
                 seen_texts.add(text)
                 source_type = meta.get("type", meta.get("source", "unknown"))
                 
-                # Truncate if too long
                 if len(text) > 800:
                     text = text[:800] + "..."
                 
-                context_text = f"[From {source_type}] {text}"
-                contexts.append((score, context_text))
-                source_info.append(source_type)
+                contexts.append({
+                    "text": text,
+                    "source": source_type,
+                    "score": score
+                })
         
-        # Sort by score (highest first)
-        contexts.sort(key=lambda x: x[0], reverse=True)
+        # Sort by score
+        contexts.sort(key=lambda x: x.get("score", 0), reverse=True)
         
-        # Take top 3 contexts
-        top_contexts = [ctx[1] for ctx in contexts[:3]]
+        # Take top 3
+        top_contexts = contexts[:3]
         
         if top_contexts:
-            result = "\n\n---\n\n".join(top_contexts)
-            print(f"  [DEBUG] Returning {len(top_contexts)} contexts, total length: {len(result)}")
-            return result
+            context_strings = [f"[From {c['source']}] {c['text']}" for c in top_contexts]
+            result = "\n\n---\n\n".join(context_strings)
+            return result, top_contexts
         
-        # If no context found with score > 0.1, try without score filter
-        print(f"  [DEBUG] No high-score contexts found, trying fallback...")
-        
-        # Fallback: Take any context with text
-        fallback_contexts = []
-        for match in matches:
-            meta = match.metadata or {}
-            text = meta.get("text", "")
-            if text and text not in seen_texts:
-                seen_texts.add(text)
-                if len(text) > 800:
-                    text = text[:800] + "..."
-                fallback_contexts.append(f"[From {meta.get('type', 'unknown')}] {text}")
-                if len(fallback_contexts) >= 3:
-                    break
-        
-        if fallback_contexts:
-            return "\n\n---\n\n".join(fallback_contexts)
-        
-        return "No relevant information found in the knowledge base. I'll try to answer based on general knowledge."
+        return "No relevant information found.", []
         
     except Exception as e:
         print(f"[ERROR] retrieve_context: {e}")
-        import traceback
-        traceback.print_exc()
-        return "Sorry, I couldn't retrieve information from the knowledge base. Please try again."
-
+        return "Sorry, couldn't retrieve information.", []
 
 # ---------------- CHAT HISTORY FUNCTIONS ----------------
 def save_chat_history(user_id: str, chat_history: list, user_timezone=None):
@@ -380,7 +443,6 @@ def fetch_chat_history(user_id: str, user_timezone=None):
 def search_wikipedia(query: str) -> str:
     """Search Wikipedia for information about a topic. Use this for encyclopedia knowledge."""
     try:
-        # Try using wikipedia library first
         try:
             search_results = wikipedia.search(query)
             if not search_results:
@@ -388,7 +450,6 @@ def search_wikipedia(query: str) -> str:
             page = wikipedia.page(search_results[0])
             return f"📚 Wikipedia: {page.title}\n\n{page.summary[:600]}...\n\n🔗 {page.url}"
         except:
-            # Fallback: Use direct API request
             url = "https://en.wikipedia.org/w/api.php"
             params = {
                 "action": "query",
@@ -402,7 +463,6 @@ def search_wikipedia(query: str) -> str:
             
             if data.get("query", {}).get("search"):
                 title = data["query"]["search"][0]["title"]
-                # Get the summary
                 params = {
                     "action": "query",
                     "titles": title,
@@ -444,7 +504,6 @@ def web_search(query: str) -> str:
             max_results=5,
         )
         
-        # Format the response nicely
         if response and isinstance(response, dict):
             results = response.get('results', [])
             if results:
@@ -460,11 +519,10 @@ def web_search(query: str) -> str:
     except Exception as e:
         return f"Error performing web search: {str(e)}"
 
-# ---------------- MAIN CHATBOT FUNCTION (FIXED) ----------------
+# ---------------- MAIN CHATBOT FUNCTION ----------------
 def get_gemini_response(user_input: str, history: list = None, user_id: str = None) -> Generator[str, None, None]:
-    """StudyBuddy with RAG + Wikipedia + Tavily using LangChain Agent."""
+    """StudyBuddy with RAG + Wikipedia + Tavily + TruLens Evaluation."""
     try:
-        # System prompt
         system_prompt = """You are StudyBuddy 🤖, a smart research assistant and tutor.
 
 Guidelines:
@@ -482,28 +540,30 @@ Available tools:
 
 Remember: You are a tutor helping students learn, so explain concepts clearly and ask follow-up questions when appropriate."""
 
-        # Use Llama 4 Scout (available and has good tool support)
         llm = ChatGroq(
             model="qwen/qwen3.6-27b",
             temperature=0.3,
             groq_api_key=GROQ_API_KEY
         )
 
-        # Create RAG tool with user_id
         @tool
         def search_notes(query: str) -> str:
             """Search the user's personal notes and documents."""
             try:
-                context = retrieve_context(query, user_id, top_k=5)
-                if context:
-                    return f"📄 From your notes:\n\n{context}"
+                context_str, contexts = retrieve_context(query, user_id, top_k=5)
+                # Store contexts for evaluation
+                search_notes.last_contexts = contexts
+                if context_str and "No relevant" not in context_str:
+                    return f"📄 From your notes:\n\n{context_str}"
                 return "No relevant information found in your notes."
             except Exception as e:
                 return f"Error searching notes: {str(e)}"
+        
+        # Initialize context storage
+        search_notes.last_contexts = []
 
         tools = [search_notes, search_wikipedia, web_search]
 
-        # Create agent with tools
         agent = create_agent(
             model=llm,
             tools=tools,
@@ -511,10 +571,7 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             system_prompt=system_prompt
         )
 
-        # Prepare messages
         messages = []
-        
-        # Add chat history
         if history:
             for h in history[-5:]:
                 if h.get('role') == 'user':
@@ -522,10 +579,8 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
                 else:
                     messages.append(("assistant", h.get('message', '')))
         
-        # Add current query
         messages.append(("user", user_input))
         
-        # Stream response with thread_id
         input_state = {"messages": messages}
         
         config = {
@@ -534,7 +589,9 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             }
         }
         
-        # Try streaming with agent
+        collected_response = ""
+        contexts_used = []
+        
         try:
             for chunk in agent.stream(
                 input_state, 
@@ -543,25 +600,28 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             ):
                 last_msg = chunk["messages"][-1]
                 
-                # Debug: Show tool usage
                 if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
                     print(f"\n🔧 Using tools:")
                     for tool_call in last_msg.tool_calls:
                         print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
                 
-                # Yield response
                 if hasattr(last_msg, 'content') and last_msg.content:
-                    yield last_msg.content
+                    content = last_msg.content
+                    collected_response += content
+                    yield content
+                    
+                    # Get contexts from the last tool call if any
+                    if hasattr(search_notes, 'last_contexts') and search_notes.last_contexts:
+                        contexts_used = search_notes.last_contexts
+                        search_notes.last_contexts = []
                     
         except Exception as stream_error:
             print(f"[WARNING] Agent streaming failed: {stream_error}")
             print("[INFO] Falling back to direct response...")
             
-            # Fallback: Direct response without tools
-            # Get context from notes
-            context = retrieve_context(user_input, user_id, top_k=3)
+            context_str, contexts = retrieve_context(user_input, user_id, top_k=3)
+            contexts_used = contexts
             
-            # Use a simpler model for fallback
             fallback_llm = ChatGroq(
                 model="qwen/qwen3.6-27b",
                 temperature=0.5,
@@ -571,24 +631,80 @@ Remember: You are a tutor helping students learn, so explain concepts clearly an
             fallback_prompt = f"""You are StudyBuddy, a helpful tutor. Answer the user's question based on the context.
 
 Context from notes:
-{context if context else "No context available"}
+{context_str if context_str else "No context available"}
 
 User question: {user_input}
 
 Provide a clear, educational response. If the question is about current events, suggest using the web search feature for the most current information."""
             
             response = fallback_llm.invoke(fallback_prompt)
+            collected_response = response.content
             yield response.content
+        
+        # ============================================
+        # SEND TO TRULENS EVALUATION
+        # ============================================
+        if collected_response and user_input:
+            # Get context texts
+            context_texts = [c.get('text', '') for c in contexts_used if c.get('text')]
+            
+            # Send for evaluation (async)
+            try:
+                import threading
+                def send_eval():
+                    send_for_evaluation(
+                        question=user_input,
+                        answer=collected_response,
+                        contexts=context_texts,
+                        user_id=user_id
+                    )
+                
+                # Send in background so it doesn't block the response
+                threading.Thread(target=send_eval, daemon=True).start()
+                print(f"\n📊 Sent to TruLens Evaluation API")
+            except Exception as e:
+                print(f"⚠️ Failed to send for evaluation: {e}")
 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
         import traceback
         traceback.print_exc()
-        
-        # Ultimate fallback: Simple response
-        yield f"I'm having trouble processing your request. Please try again or rephrase your question. Error: {str(e)}"
+        yield f"I'm having trouble processing your request. Please try again. Error: {str(e)}"
 
-# ---------------- COMPATIBILITY WRAPPER ----------------
 def get_studybuddy_response(user_input: str, history: list = None, user_id: str = None):
     """Alias for get_gemini_response"""
     return get_gemini_response(user_input, history, user_id)
+
+# ============================================
+# COMMAND LINE TESTING
+# ============================================
+
+if __name__ == "__main__":
+    print("="*60)
+    print("🤖 StudyBuddy with TruLens Evaluation")
+    print("="*60)
+    print(f"📊 Evaluation API: {EVAL_API_URL}")
+    print("\nType 'exit' to quit")
+    print("-"*60)
+    
+    chat_history = []
+    user_id = "test_user_001"
+    
+    while True:
+        user_input = input("\nYou: ")
+        if user_input.lower() == 'exit':
+            break
+        
+        print("\nStudyBuddy: ", end="", flush=True)
+        full_response = ""
+        
+        for chunk in get_gemini_response(user_input, chat_history, user_id):
+            print(chunk, end="", flush=True)
+            full_response += chunk
+        
+        print()
+        chat_history.append({"role": "user", "message": user_input})
+        chat_history.append({"role": "assistant", "message": full_response})
+        
+        # Save chat history
+        save_chat_history(user_id, chat_history)
