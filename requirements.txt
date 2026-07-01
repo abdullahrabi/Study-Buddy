@@ -17,5 +17,6 @@ langgraph
 langgraph-checkpoint
 typing-extensions
 pydantic
-Flask
-flask-cors
+bcrypt
+jwt
+PyJWT 

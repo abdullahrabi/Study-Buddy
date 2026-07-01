@@ -1,3 +1,4 @@
+# pages/app.py - Fixed duplicate saving
 import streamlit as st
 import os
 import tempfile
@@ -10,17 +11,17 @@ from Notes_Quiz_Section import (
     evaluate_quiz_attempt,
     format_quiz_for_display,
     extract_text,
-    extract_text,  # This imports extract_text
-    extract_text_from_pdf,  # ADD THIS
-    extract_text_from_docx,  # ADD THIS
-    extract_text_from_txt,  # ADD THIS
-    store_notes_and_quizzes  # ADD THIS
+    extract_text_from_pdf,
+    extract_text_from_docx,
+    extract_text_from_txt,
+    store_notes_and_quizzes
 )
 from Chatbot import (
     retrieve_context,
-    save_chat_history,
-    fetch_chat_history,
+    store_conversation,
+    get_user_history,
     get_gemini_response,
+    get_conversation_context,
 )
 from Progress import (
     store_progress,
@@ -28,6 +29,13 @@ from Progress import (
     cleanup_duplicate_progress,
     format_progress_for_display
 )
+
+# -----------------------------
+# CHECK LOGIN STATUS
+# -----------------------------
+if not st.session_state.get('logged_in', False) or not st.session_state.get('user_id'):
+    st.switch_page("Login_Signup.py")
+    st.stop()
 
 # -----------------------------
 # LOAD CSS FROM EXTERNAL FILE
@@ -79,6 +87,7 @@ book_icon = get_base64_file("Assets/book.jpeg") if os.path.exists("Assets/book.j
 quiz_icon = get_base64_file("Assets/quiz.jpeg") if os.path.exists("Assets/quiz.jpeg") else ""
 bin_icon = get_base64_file("Assets/bin.png") if os.path.exists("Assets/bin.png") else ""
 search_icon= get_base64_file("Assets/search_icon.png") if os.path.exists("Assets/search_icon.png") else ""
+
 def show_custom_loader(text="Processing..."):
     """Display custom GIF loader using base64 with minimal gap"""
     if Spinner_Loader:
@@ -120,7 +129,6 @@ st.set_page_config(
 # Session State Setup
 # -----------------------------
 defaults = {
-    "user_id": "default_user",
     "attempt": 1,
     "notes_text": "",
     "quiz": None,
@@ -145,16 +153,38 @@ defaults = {
     "need_rerun": False,
     "active_tab": "Notes & Quiz",
     "ai_responding": False,
-    "streaming_message": "",  # Store the streaming message
+    "streaming_message": "",
     "streaming_finished": False,
     "current_accuracy": 0,
-    "chat_placeholder": None,  # Placeholder for streaming
-    "streaming_chunks": [],  # Store streaming chunks
+    "chat_placeholder": None,
+    "streaming_chunks": [],
+    "last_user_message": None,
+    "last_chat_messages": None,
+    "_full_response": "",
 }
 
 for k, v in defaults.items():
     if k not in st.session_state:
         st.session_state[k] = v
+
+# -----------------------------
+# CONVERSATION SAVING WITH USER ID
+# -----------------------------
+
+def save_conversation_to_pinecone(user_id: str, question: str, answer: str, contexts: list = None):
+    """Save conversation with user_id for retrieval"""
+    try:
+        store_conversation(
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            contexts=contexts or []
+        )
+        print(f"✅ Conversation saved for user: {user_id}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Failed to save conversation: {e}")
+        return False
 
 # -----------------------------
 # Chat Helpers
@@ -531,12 +561,14 @@ def display_option_buttons(question_idx, options, current_selection, answer_type
 # HEADER
 # -----------------------------
 st.markdown(
-    """<div class="header-card"><div class="header-inner">
+    f"""<div class="header-card"><div class="header-inner">
        <div class="header-avatar">
-         <img src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png">
+         <img src="data:image/png;base64,{Avatar_Icon if Avatar_Icon else 'https://cdn-icons-png.flaticon.com/512/4712/4712109.png'}">
        </div>
        <div><h1>Meet StudyBuddy</h1>
-         <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p></div>
+         <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
+         <p style="font-size: 12px; color: #8a7bff;">👤 Logged in as: {st.session_state.user_email}</p>
+       </div>
     </div></div>""",
     unsafe_allow_html=True,
 )
@@ -556,6 +588,7 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown("###  Welcome to **Study Buddy 👋**")
+    st.markdown(f"**User ID:** {st.session_state.user_id}")
     st.markdown("### 💬 Chat Sessions")
 
     if st.button("🆕 Start New Chat", use_container_width=True):
@@ -584,16 +617,12 @@ with st.sidebar:
 
         st.markdown("</div>", unsafe_allow_html=True)
         if bin_icon:
-            bin_icon= f'![bin_icon-class](data:image/png;base64,{bin_icon})'
+            bin_icon_html = f'![bin_icon-class](data:image/png;base64,{bin_icon})'
         else:
-            bin_icon= "🗑️"
-        if st.button(f"{bin_icon} Clear All Chats", use_container_width=True, type="secondary"):
+            bin_icon_html = "🗑️"
+        if st.button(f"{bin_icon_html} Clear All Chats", use_container_width=True, type="secondary"):
             st.session_state.chat_sessions = []
             st.session_state.current_session_id = None
-            try:
-                save_chat_history(st.session_state.user_id, [])
-            except:
-                pass
             st.rerun()
     else:
         st.info("No chat sessions yet!")
@@ -620,18 +649,14 @@ tab1, tab2, tab3 = st.tabs([
     f"{progress_icon} Progress"
 ])
 
-# ---------- TAB 1: CHAT (WITH AUTO-SCROLL ON RERUN) ----------
+# ---------- TAB 1: CHAT ----------
 with tab1:
     st.session_state.active_tab = "Chat"
     
-    # 🔥 SIMPLE AUTO-SCROLL - RUNS ON EVERY RERUN
     def scroll_to_bottom():
-        """Simple scroll to bottom function that runs on each rerun"""
         scroll_js = """
         <script>
-        // Simple scroll function
         function scrollToBottom() {
-            // Find the main scrollable container
             const container = document.querySelector('[data-testid="stVerticalBlock"]');
             if (container) {
                 container.scrollTop = container.scrollHeight;
@@ -640,8 +665,6 @@ with tab1:
                     behavior: 'smooth'
                 });
             }
-            
-            // Also scroll the app container
             const appContainer = document.querySelector('[data-testid="stAppViewContainer"]');
             if (appContainer) {
                 appContainer.scrollTop = appContainer.scrollHeight;
@@ -650,18 +673,12 @@ with tab1:
                     behavior: 'smooth'
                 });
             }
-            
-            // Window scroll as backup
             window.scrollTo({
                 top: document.body.scrollHeight,
                 behavior: 'smooth'
             });
         }
-        
-        // Scroll immediately when page loads
         scrollToBottom();
-        
-        // Scroll after small delays to catch late-rendering content
         setTimeout(scrollToBottom, 100);
         setTimeout(scrollToBottom, 300);
         setTimeout(scrollToBottom, 500);
@@ -670,13 +687,10 @@ with tab1:
         """
         st.markdown(scroll_js, unsafe_allow_html=True)
     
-    # Display chat messages at the top
     current_msgs = get_current_session_messages()
     
-    # Container for all chat messages and streaming
     chat_container = st.container()
     with chat_container:
-        # Display all existing messages
         for item in current_msgs:
             role = item["role"]
             txt = item["message"]
@@ -698,25 +712,27 @@ with tab1:
                     unsafe_allow_html=True,
                 )
         
-        # 🔥 TRIGGER AUTO-SCROLL AFTER DISPLAYING MESSAGES
         scroll_to_bottom()
         
-        # 🔥 HANDLE STREAMING RESPONSE
+        # ============================================
+        # HANDLE STREAMING RESPONSE (FIXED - No Duplicate)
+        # ============================================
         if st.session_state.get("ai_responding", False) and st.session_state.get("last_user_message"):
             try:
-                # Get the streaming response
                 response_stream = get_gemini_response(
                     st.session_state.last_user_message, 
                     st.session_state.last_chat_messages, 
                     st.session_state.user_id
                 )
                 
-                # Create a generator that yields chunks
+                # Store the question for saving
+                user_question = st.session_state.last_user_message
+                
+                # Create generator that streams and saves ONCE
                 def response_generator():
                     full_response = ""
                     for chunk in response_stream:
                         if chunk:
-                            # Extract text from chunk
                             if hasattr(chunk, 'content'):
                                 chunk_text = chunk.content
                             elif hasattr(chunk, 'text'):
@@ -727,26 +743,30 @@ with tab1:
                                 chunk_text = str(chunk)
                             
                             full_response += chunk_text
-                            # Store in session state for display
                             st.session_state.streaming_message = full_response
                             yield chunk_text
                             time.sleep(0.05)
                     
-                    # Store the full response for later
+                    # SAVE ONCE HERE - after streaming completes
+                    if full_response and user_question:
+                        # Add to session messages
+                        add_message_to_current_session("bot", full_response)
+                        
+                        # Save to Pinecone with user_id (ONCE)
+                        save_conversation_to_pinecone(
+                            user_id=st.session_state.user_id,
+                            question=user_question,
+                            answer=full_response,
+                            contexts=[]
+                        )
+                        print(f"✅ Saved conversation for user: {st.session_state.user_id}")
+                    
+                    # Store full response for any cleanup
                     st.session_state._full_response = full_response
                 
-                # 🔥 st.write_stream RENDERS INSIDE CHAT CONTAINER
+                # Display the stream
                 st.write_stream(response_generator)
-                
-                # 🔥 SCROLL AFTER STREAMING COMPLETES
                 scroll_to_bottom()
-                
-                # Get the full response from session state
-                full_response = st.session_state.get('_full_response', '')
-                
-                # Add the complete response to chat history
-                if full_response:
-                    add_message_to_current_session("bot", full_response)
                 
                 # Clear streaming flags
                 st.session_state.ai_responding = False
@@ -755,13 +775,6 @@ with tab1:
                 st.session_state.last_chat_messages = None
                 st.session_state._full_response = ""
                 
-                # Save to history
-                try:
-                    save_chat_history(st.session_state.user_id, get_current_session_messages())
-                except:
-                    pass
-                
-                # Final rerun to update the UI
                 st.rerun()
                 
             except Exception as e:
@@ -772,13 +785,11 @@ with tab1:
                 st.session_state.last_chat_messages = None
                 st.session_state._full_response = ""
                 
-                # Add error message
                 error_msg = f"Error: {str(e)}"
                 add_message_to_current_session("bot", error_msg)
                 st.error(f"❌ {error_msg}")
                 st.rerun()
     
-    # 🔥 CHANGED: Using st.chat_input instead of form
     user_msg = st.chat_input(
         "Ask me anything about your studies...",
         disabled=st.session_state.get("ai_responding", False),
@@ -791,7 +802,6 @@ with tab1:
         else:
             add_message_to_current_session("user", user_msg)
         
-        # Set AI responding flag
         st.session_state.ai_responding = True
         st.session_state.streaming_message = ""
         st.session_state.last_user_message = user_msg
@@ -799,8 +809,10 @@ with tab1:
         
         st.rerun()
     
-    # 🔥 EXTRA SCROLL AFTER CHAT INPUT (runs on every rerun)
     scroll_to_bottom()
+
+
+
 # ---------- TAB 2: NOTES & QUIZ ----------
 with tab2:
     st.session_state.active_tab = "Notes & Quiz"
