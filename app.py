@@ -49,8 +49,8 @@ if 'logged_in' not in st.session_state:
 # ============================================
 
 if st.session_state.logged_in and st.session_state.token:
-    # Check if app.py exists in the same directory
-     st.switch_page("pages/app.py")
+    # Check if main.py exists in the same directory
+     st.switch_page("pages/main.py")
      st.stop()
    
 # ============================================
