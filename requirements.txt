@@ -18,5 +18,4 @@ langgraph-checkpoint
 typing-extensions
 pydantic
 bcrypt
-jwt
 PyJWT 
