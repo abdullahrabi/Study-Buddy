@@ -1,55 +1,16 @@
-# Login_Signup.py - Fully Fixed with Hidden Navigation
+# Login_Signup.py - Fully Fixed
 import streamlit as st
 import os
 import time
 import hashlib
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # Removed timezone import
 from dotenv import load_dotenv
 from pinecone import Pinecone
 import bcrypt
-import PyJWT as jwt  # Fixed: Use PyJWT
+import jwt
 
 load_dotenv()
-
-# ============================================
-# PAGE CONFIG - HIDE NAVIGATION
-# ============================================
-
-st.set_page_config(
-    page_title="StudyBuddy - Login",
-    page_icon="🤖",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-    menu_items={
-        'Get Help': None,
-        'Report a bug': None,
-        'About': None
-    }
-)
-
-# ============================================
-# HIDE PAGE NAVIGATION ONLY
-# ============================================
-
-st.markdown("""
-<style>
-    /* Hide only the page navigation links (app, main) */
-    [data-testid="stSidebarNav"] {
-        display: none !important;
-    }
-    
-    /* Hide the "app" and "main" text in sidebar */
-    .st-emotion-cache-1v0mbdj {
-        display: none !important;
-    }
-    
-    /* Optional: Hide the hamburger menu icon */
-    .stAppHeader {
-        display: none !important;
-    }
-</style>
-""", unsafe_allow_html=True)
 
 # ============================================
 # CONFIGURATION
@@ -57,7 +18,18 @@ st.markdown("""
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
+# Use a strong key (at least 32 characters)
 JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-at-least-32-characters-long")
+
+# ============================================
+# PAGE CONFIG
+# ============================================
+
+st.set_page_config(
+    page_title="StudyBuddy - Login",
+    page_icon="🤖",
+    layout="centered"
+)
 
 # ============================================
 # SESSION STATE
@@ -77,12 +49,10 @@ if 'logged_in' not in st.session_state:
 # ============================================
 
 if st.session_state.logged_in and st.session_state.token:
-    try:
-        st.switch_page("pages/main.py")
-    except:
-        st.switch_page("main.py")
-    st.stop()
-
+    # Check if main.py exists in the same directory
+     st.switch_page("pages/main.py")
+     st.stop()
+   
 # ============================================
 # PINECONE SETUP
 # ============================================
@@ -146,7 +116,7 @@ def create_user(email: str, password: str) -> dict:
                 "type": "user_auth",
                 "email": email,
                 "password_hash": password_hash,
-                "created_at": datetime.now().isoformat()  # Fixed: use datetime.now()
+                "created_at": datetime.utcnow().isoformat()
             }
         }],
         namespace="users"
@@ -168,11 +138,11 @@ def verify_user(email: str, password: str) -> dict:
     return None
 
 def generate_jwt(user_id: str, email: str) -> str:
-    """Generate JWT token using PyJWT"""
+    """Generate JWT token"""
     payload = {
         "user_id": user_id,
         "email": email,
-        "exp": datetime.now() + timedelta(days=7)  # Fixed: use datetime.now()
+        "exp": datetime.utcnow() + timedelta(days=7)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
