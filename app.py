@@ -4,11 +4,25 @@ import os
 import time
 import hashlib
 import json
-from datetime import datetime, timedelta  # Removed timezone import
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pinecone import Pinecone
 import bcrypt
-import jwt
+
+# ============================================
+# JWT IMPORT - FIXED
+# ============================================
+
+try:
+    import PyJWT as jwt
+    JWT_AVAILABLE = True
+except ImportError:
+    try:
+        import jwt
+        JWT_AVAILABLE = True
+    except ImportError:
+        JWT_AVAILABLE = False
+        print("⚠️ PyJWT not installed. Please run: pip install PyJWT")
 
 load_dotenv()
 
@@ -18,7 +32,6 @@ load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-# Use a strong key (at least 32 characters)
 JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-at-least-32-characters-long")
 
 # ============================================
@@ -49,10 +62,12 @@ if 'logged_in' not in st.session_state:
 # ============================================
 
 if st.session_state.logged_in and st.session_state.token:
-    # Check if main.py exists in the same directory
-     st.switch_page("pages/main.py")
-     st.stop()
-   
+    try:
+        st.switch_page("pages/main.py")
+    except:
+        st.switch_page("main.py")
+    st.stop()
+
 # ============================================
 # PINECONE SETUP
 # ============================================
@@ -116,7 +131,7 @@ def create_user(email: str, password: str) -> dict:
                 "type": "user_auth",
                 "email": email,
                 "password_hash": password_hash,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.now().isoformat()  # Fixed: use datetime.now()
             }
         }],
         namespace="users"
@@ -139,10 +154,13 @@ def verify_user(email: str, password: str) -> dict:
 
 def generate_jwt(user_id: str, email: str) -> str:
     """Generate JWT token"""
+    if not JWT_AVAILABLE:
+        raise ImportError("PyJWT is not installed. Please run: pip install PyJWT")
+    
     payload = {
         "user_id": user_id,
         "email": email,
-        "exp": datetime.utcnow() + timedelta(days=7)
+        "exp": datetime.now() + timedelta(days=7)  # Fixed: use datetime.now()
     }
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
