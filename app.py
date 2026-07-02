@@ -10,8 +10,6 @@ from pinecone import Pinecone
 import bcrypt
 import jwt
 
-from pages.main import get_base64_file
-
 load_dotenv()
 
 # ============================================
@@ -276,20 +274,17 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================
-Avatar_Icon = get_base64_file("Assets/Bot_Avatar.png") if os.path.exists("Assets/Bot_Avatar.png") else ""
 # LOGIN / SIGNUP UI
-st.markdown(
-    f"""<div class="header-card"><div class="header-inner">
-       <div class="header-avatar">
-         <img src="data:image/png;base64,{Avatar_Icon if Avatar_Icon else 'https://cdn-icons-png.flaticon.com/512/4712/4712109.png'}">
-       </div>
-       <div><h1>Meet StudyBuddy</h1>
-         <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
-         <p style="font-size: 12px; color: #8a7bff;">👤 Logged in as: {st.session_state.user_email}</p>
-       </div>
-    </div></div>""",
-    unsafe_allow_html=True,
-)
+# ============================================
+
+# Header
+st.markdown("""
+<div class="auth-header">
+    <span class="emoji">🤖</span>
+    <h1>StudyBuddy</h1>
+    <div class="subtitle">Your AI Study Assistant</div>
+</div>
+""", unsafe_allow_html=True)
 
 # Container
 with st.container():
