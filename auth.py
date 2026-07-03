@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import secrets
 import uuid
 from http.cookies import SimpleCookie
+import streamlit.components.v1 as components
+import re
 
 load_dotenv()
 
@@ -47,20 +49,18 @@ def init_session_state():
         st.session_state.auth_checked = False
     if 'session_id' not in st.session_state:
         st.session_state.session_id = None
-    if 'cookie_processed' not in st.session_state:
-        st.session_state.cookie_processed = False
 
 # ============================================
-# COOKIE HELPER FUNCTIONS (Using st.markdown with HTML)
+# COOKIE HELPER FUNCTIONS
 # ============================================
 
 def get_cookie_value(key):
     """
-    Safely get a cookie value from the request headers using st.context.
-    This is the official Streamlit API (1.36.0+).
+    Safely get a cookie value from the request headers.
+    Uses multiple approaches for compatibility across Streamlit versions.
     """
     try:
-        # Use the official st.context API
+        # Try Streamlit's context headers (Streamlit 1.28+)
         headers = st.context.headers
         if headers:
             cookie_str = headers.get("Cookie")
@@ -69,16 +69,39 @@ def get_cookie_value(key):
                 cookie_value = cookie.get(key)
                 if cookie_value:
                     return cookie_value.value
-    except AttributeError as e:
-        # Fallback for older Streamlit versions
-        print(f"st.context not available: {e}")
-    except Exception as e:
-        print(f"Error getting cookie: {e}")
+    except (AttributeError, TypeError):
+        pass
+    
+    try:
+        # Try alternative method for older Streamlit versions
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        
+        ctx = get_script_run_ctx()
+        if ctx and hasattr(ctx, 'headers'):
+            headers = ctx.headers
+            if headers:
+                cookie_str = headers.get("Cookie")
+                if cookie_str:
+                    cookie = SimpleCookie(cookie_str)
+                    cookie_value = cookie.get(key)
+                    if cookie_value:
+                        return cookie_value.value
+    except (AttributeError, ImportError, TypeError):
+        pass
+    
+    # Try to get cookies from query parameters (fallback for testing)
+    try:
+        # Check if cookie was passed as query param (useful for testing)
+        cookie_param = st.query_params.get('cookie_' + key)
+        if cookie_param:
+            return cookie_param
+    except:
+        pass
     
     return None
 
 def set_cookie(key, value, days=30):
-    """Set a cookie in the browser using st.markdown (no deprecation warnings)."""
+    """Set a cookie in the browser using JavaScript."""
     js_code = f"""
     <script>
         var date = new Date();
@@ -87,46 +110,34 @@ def set_cookie(key, value, days=30):
         console.log("Cookie set: {key}={value}");
     </script>
     """
-    # Using st.markdown with unsafe_allow_html=True to inject JavaScript
-    st.markdown(f'<div style="display:none">{js_code}</div>', unsafe_allow_html=True)
-    time.sleep(0.1)
+    components.html(js_code, height=0)
+    time.sleep(0.2)  # Give time for cookie to be set
 
 def delete_cookie(key):
-    """Delete a cookie from the browser using st.markdown (no deprecation warnings)."""
-    js_code = f"""
+    """Delete a cookie from the browser."""
+    components.html(f"""
     <script>
         document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
         console.log("Cookie deleted: {key}");
     </script>
-    """
-    st.markdown(f'<div style="display:none">{js_code}</div>', unsafe_allow_html=True)
-    time.sleep(0.1)
+    """, height=0)
+    time.sleep(0.2)  # Give time for cookie to be deleted
 
 def get_or_create_session_id():
     """
     Get the session ID from the cookie, or create a new one.
     This ID persists across page refreshes.
     """
-    # Check if we already processed the cookie in this run
-    if st.session_state.cookie_processed:
-        return st.session_state.session_id
-    
     session_id = get_cookie_value('ST_SESSION_ID')
-    
     if session_id is None:
-        # No cookie exists, create one
         session_id = uuid.uuid4().hex
         set_cookie('ST_SESSION_ID', session_id)
         st.session_state.session_id = session_id
-        st.session_state.cookie_processed = True
-        # Rerun once to apply the cookie
+        # Rerun to apply the cookie and avoid showing the login page briefly
         st.rerun()
-        return session_id
     else:
-        # Cookie exists, store it and mark as processed
         st.session_state.session_id = session_id
-        st.session_state.cookie_processed = True
-        return session_id
+    return session_id
 
 # ============================================
 # AUTH STATE STORE (Singleton)
@@ -255,19 +266,18 @@ def check_authentication():
         return True
     
     # 2. Check cookie-based session (survives refresh)
-    if not st.session_state.cookie_processed:
-        session_id = get_or_create_session_id()
-        auth_state = get_auth_state()
-        
-        if session_id in auth_state:
-            # Restore session from the auth state store
-            user_data = auth_state[session_id]
-            st.session_state.token = user_data.get('token')
-            st.session_state.user_id = user_data.get('user_id')
-            st.session_state.user_email = user_data.get('email')
-            st.session_state.logged_in = True
-            st.session_state.auth_checked = True
-            return True
+    session_id = get_or_create_session_id()
+    auth_state = get_auth_state()
+    
+    if session_id in auth_state:
+        # Restore session from the auth state store
+        user_data = auth_state[session_id]
+        st.session_state.token = user_data.get('token')
+        st.session_state.user_id = user_data.get('user_id')
+        st.session_state.user_email = user_data.get('email')
+        st.session_state.logged_in = True
+        st.session_state.auth_checked = True
+        return True
     
     return False
 
@@ -319,4 +329,3 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.auth_checked = False
     st.session_state.session_id = None
-    st.session_state.cookie_processed = False
