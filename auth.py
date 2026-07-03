@@ -1,4 +1,4 @@
-# auth.py - Complete Custom Authentication Module
+# auth.py - Complete, Working Authentication with Cookie Persistence
 import streamlit as st
 import os
 from pinecone import Pinecone
@@ -8,6 +8,9 @@ import jwt
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import secrets
+import uuid
+from http.cookies import SimpleCookie
+import streamlit.components.v1 as components
 
 load_dotenv()
 
@@ -43,21 +46,94 @@ def init_session_state():
         st.session_state.logged_in = False
     if 'auth_checked' not in st.session_state:
         st.session_state.auth_checked = False
-    if 'redirect_after_auth' not in st.session_state:
-        st.session_state.redirect_after_auth = False
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = None
+
+# ============================================
+# COOKIE HELPER FUNCTIONS
+# ============================================
+
+def get_cookie_value(key):
+    """Safely get a cookie value from the request headers."""
+    try:
+        headers = st.context.headers
+    except AttributeError:
+        try:
+            from streamlit.web.server.websocket_headers import _get_websocket_headers
+            headers = _get_websocket_headers()
+        except:
+            headers = None
+        
+    if headers is not None:
+        cookie_str = headers.get("Cookie")
+        if cookie_str:
+            cookie = SimpleCookie(cookie_str)
+            cookie_value = cookie.get(key)
+            if cookie_value:
+                return cookie_value.value
+    return None
+
+def set_cookie(key, value, days=30):
+    """Set a cookie in the browser using JavaScript."""
+    js_code = f"""
+    <script>
+        var date = new Date();
+        date.setTime(date.getTime() + ({days} * 24 * 60 * 60 * 1000));
+        document.cookie = "{key}={value}; expires=" + date.toUTCString() + "; path=/; SameSite=Lax";
+        console.log("Cookie set: {key}={value}");
+    </script>
+    """
+    components.html(js_code, height=0)
+    time.sleep(0.2)  # Give time for cookie to be set
+
+def delete_cookie(key):
+    """Delete a cookie from the browser."""
+    components.html(f"""
+    <script>
+        document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        console.log("Cookie deleted: {key}");
+    </script>
+    """, height=0)
+    time.sleep(0.2)  # Give time for cookie to be deleted
+
+def get_or_create_session_id():
+    """
+    Get the session ID from the cookie, or create a new one.
+    This ID persists across page refreshes.
+    """
+    session_id = get_cookie_value('ST_SESSION_ID')
+    if session_id is None:
+        session_id = uuid.uuid4().hex
+        set_cookie('ST_SESSION_ID', session_id)
+        st.session_state.session_id = session_id
+        # Rerun to apply the cookie and avoid showing the login page briefly
+        st.rerun()
+    else:
+        st.session_state.session_id = session_id
+    return session_id
+
+# ============================================
+# AUTH STATE STORE (Singleton)
+# ============================================
+
+@st.cache_resource
+def get_auth_state():
+    """
+    A singleton to store authentication state, mapping session IDs to user data.
+    This persists across reruns because of @st.cache_resource.
+    """
+    return {}
 
 # ============================================
 # PINECONE AUTH FUNCTIONS
 # ============================================
 
 def embed_text(text: str) -> list:
-    """Simple embedding function"""
     import random
     random.seed(hash(text) % 2**32)
     return [random.uniform(0.01, 0.02) for _ in range(768)]
 
 def find_user_by_email(email: str) -> dict:
-    """Find user by email in Pinecone"""
     text = f"user_auth:{email}"
     embedding = embed_text(text)
     
@@ -82,7 +158,6 @@ def find_user_by_email(email: str) -> dict:
         return None
 
 def create_user(email: str, password: str) -> dict:
-    """Create new user in Pinecone"""
     existing = find_user_by_email(email)
     if existing:
         return None
@@ -114,7 +189,6 @@ def create_user(email: str, password: str) -> dict:
     }
 
 def verify_user(email: str, password: str) -> dict:
-    """Verify user credentials"""
     user = find_user_by_email(email)
     if not user:
         return None
@@ -131,7 +205,6 @@ def verify_user(email: str, password: str) -> dict:
 # ============================================
 
 def generate_jwt(user_id: str, email: str) -> str:
-    """Generate JWT token"""
     payload = {
         "user_id": user_id,
         "email": email,
@@ -140,7 +213,6 @@ def generate_jwt(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
 def verify_token(token: str) -> dict:
-    """Verify JWT token and return user data if valid"""
     try:
         decoded = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
         exp = decoded.get('exp')
@@ -155,59 +227,78 @@ def verify_token(token: str) -> dict:
         return {'valid': False}
 
 # ============================================
-# AUTHENTICATION CHECK WITH TIME GAP
+# AUTHENTICATION WITH COOKIE PERSISTENCE
 # ============================================
 
 def check_authentication():
-    """
-    Check if user is authenticated - uses query_params for persistence
-    With time gap to handle async issues
-    """
+    """Check if user is authenticated using session state or a persistent cookie."""
     init_session_state()
     
-    # 1. Check session state first
+    # 1. Check session state first (fastest)
     if st.session_state.logged_in and st.session_state.token:
         return True
     
-    # 2. Check query params (survives page refresh)
-    token_from_url = st.query_params.get("token", None)
+    # 2. Check cookie-based session (survives refresh)
+    session_id = get_or_create_session_id()
+    auth_state = get_auth_state()
     
-    if token_from_url and not st.session_state.auth_checked:
-        # Add small delay to ensure all async operations complete
-        time.sleep(0.1)
-        
-        result = verify_token(token_from_url)
-        if result.get('valid'):
-            st.session_state.token = token_from_url
-            st.session_state.user_id = result.get('user_id')
-            st.session_state.user_email = result.get('email')
-            st.session_state.logged_in = True
-            st.session_state.auth_checked = True
-            # Clear token from URL after validation
-            st.query_params.clear()
-            return True
-        else:
-            st.query_params.clear()
-            st.session_state.auth_checked = True
+    if session_id in auth_state:
+        # Restore session from the auth state store
+        user_data = auth_state[session_id]
+        st.session_state.token = user_data.get('token')
+        st.session_state.user_id = user_data.get('user_id')
+        st.session_state.user_email = user_data.get('email')
+        st.session_state.logged_in = True
+        st.session_state.auth_checked = True
+        return True
     
     return False
 
+def login_user(user_data: dict):
+    """Mark a user as authenticated and persist across refreshes."""
+    init_session_state()
+    
+    token = generate_jwt(user_data['user_id'], user_data['email'])
+    
+    # Set session state
+    st.session_state.token = token
+    st.session_state.user_id = user_data['user_id']
+    st.session_state.user_email = user_data['email']
+    st.session_state.logged_in = True
+    st.session_state.auth_checked = True
+    
+    # Save to cookie-based session (persists across refreshes)
+    session_id = get_or_create_session_id()
+    auth_state = get_auth_state()
+    auth_state[session_id] = {
+        'user_id': user_data['user_id'],
+        'email': user_data['email'],
+        'token': token,
+    }
+    
+    return token
+
 def require_auth():
-    """Require authentication for a page"""
+    """Require authentication for a page."""
     init_session_state()
     if not check_authentication():
-        # Add delay before redirect to prevent race condition
-        time.sleep(0.2)
         st.switch_page("app.py")
         st.stop()
     return True
 
 def logout():
-    """Logout user and clear all session data"""
+    """Logout user and clear all session and cookie data."""
+    session_id = get_cookie_value('ST_SESSION_ID')
+    if session_id:
+        auth_state = get_auth_state()
+        if session_id in auth_state:
+            del auth_state[session_id]
+    
+    delete_cookie('ST_SESSION_ID')
+    
     st.session_state.token = None
     st.session_state.user_id = None
     st.session_state.user_email = None
     st.session_state.logged_in = False
     st.session_state.auth_checked = False
-    st.session_state.redirect_after_auth = False
-    st.query_params.clear()
+    st.session_state.session_id = None

@@ -7,22 +7,17 @@ import time
 import streamlit.components.v1 as components
 
 # ============================================
-# IMPORT AUTHENTICATION MODULE
+# IMPORT AUTHENTICATION
 # ============================================
-from auth import init_session_state, require_auth
+from auth import init_session_state, require_auth, logout
 
 # ============================================
-# REQUIRE AUTHENTICATION WITH TIME GAP
+# REQUIRE AUTHENTICATION
 # ============================================
-
-# Add small delay to handle async issues
-time.sleep(0.5)
-
-# This will check both session state and query params
 require_auth()
 
-# Add another small delay after authentication
-time.sleep(0.5)
+
+
 
 
 # Now proceed with the rest of the imports
@@ -292,25 +287,18 @@ with st.sidebar:
     st.markdown("###  Welcome to **Study Buddy 👋**")
     st.markdown(f"**User ID:** {user_id}")
     
-    # Custom Logout button (since st.logout doesn't accept callback in this version)
+   # Logout button
     if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-        # Clear session state
-        for key in ['token', 'user_id', 'user_email', 'logged_in', 'auth_checked']:
-            if key in st.session_state:
-                st.session_state[key] = None if key != 'logged_in' else False
-        
-        # Clear localStorage via JavaScript
+        # Clear localStorage
         components.html("""
         <script>
             localStorage.removeItem('auth_token');
             localStorage.removeItem('token_timestamp');
-            window.location.href = window.location.pathname;
         </script>
         """, height=0)
-        
-        # Redirect to login
-        st.switch_page("app.py")
-        st.stop()
+        logout()
+        st.rerun()
+   
     
     st.markdown("---")
     st.markdown("### 💬 Chat Sessions")
