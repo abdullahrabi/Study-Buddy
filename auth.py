@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 import secrets
 import uuid
 from http.cookies import SimpleCookie
-import streamlit.components.v1 as components
 
 load_dotenv()
 
@@ -50,7 +49,7 @@ def init_session_state():
         st.session_state.session_id = None
 
 # ============================================
-# COOKIE HELPER FUNCTIONS
+# COOKIE HELPER FUNCTIONS (UPDATED TO USE st.iframe)
 # ============================================
 
 def get_cookie_value(key):
@@ -74,7 +73,7 @@ def get_cookie_value(key):
     return None
 
 def set_cookie(key, value, days=30):
-    """Set a cookie in the browser using JavaScript."""
+    """Set a cookie in the browser using st.iframe."""
     js_code = f"""
     <script>
         var date = new Date();
@@ -83,12 +82,12 @@ def set_cookie(key, value, days=30):
         console.log("Cookie set: {key}={value}");
     </script>
     """
-    components.html(js_code, height=0)
+    st.iframe(js_code, height=0)
     time.sleep(0.2)  # Give time for cookie to be set
 
 def delete_cookie(key):
-    """Delete a cookie from the browser."""
-    components.html(f"""
+    """Delete a cookie from the browser using st.iframe."""
+    st.iframe(f"""
     <script>
         document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
         console.log("Cookie deleted: {key}");
