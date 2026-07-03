@@ -49,6 +49,8 @@ def init_session_state():
         st.session_state.auth_checked = False
     if 'session_id' not in st.session_state:
         st.session_state.session_id = None
+    if 'cookie_checked' not in st.session_state:
+        st.session_state.cookie_checked = False
 
 # ============================================
 # COOKIE HELPER FUNCTIONS
@@ -59,8 +61,8 @@ def get_cookie_value(key):
     Safely get a cookie value from the request headers.
     Uses multiple approaches for compatibility across Streamlit versions.
     """
+    # Method 1: Try Streamlit's context headers (Streamlit 1.28+)
     try:
-        # Try Streamlit's context headers (Streamlit 1.28+)
         headers = st.context.headers
         if headers:
             cookie_str = headers.get("Cookie")
@@ -72,26 +74,34 @@ def get_cookie_value(key):
     except (AttributeError, TypeError):
         pass
     
+    # Method 2: Try browser's document.cookie via JavaScript
+    # This is more reliable on Streamlit Cloud
     try:
-        # Try alternative method for older Streamlit versions
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        from streamlit.components.v1 import html
         
-        ctx = get_script_run_ctx()
-        if ctx and hasattr(ctx, 'headers'):
-            headers = ctx.headers
-            if headers:
-                cookie_str = headers.get("Cookie")
-                if cookie_str:
-                    cookie = SimpleCookie(cookie_str)
-                    cookie_value = cookie.get(key)
-                    if cookie_value:
-                        return cookie_value.value
-    except (AttributeError, ImportError, TypeError):
+        # Create a hidden component that returns the cookie value
+        js_code = f"""
+        <script>
+            function getCookie(name) {{
+                const value = `; ${{document.cookie}}`;
+                const parts = value.split(`; ${{name}}=`);
+                if (parts.length === 2) {{
+                    const cookieValue = parts.pop().split(';').shift();
+                    window.parent.postMessage({{cookieValue: cookieValue}}, '*');
+                }} else {{
+                    window.parent.postMessage({{cookieValue: null}}, '*');
+                }}
+            }}
+            getCookie('{key}');
+        </script>
+        """
+        html(js_code, height=0)
+    except:
         pass
     
-    # Try to get cookies from query parameters (fallback for testing)
+    # Method 3: Try using st.query_params (works as fallback)
     try:
-        # Check if cookie was passed as query param (useful for testing)
+        # Check if cookie was passed as query param
         cookie_param = st.query_params.get('cookie_' + key)
         if cookie_param:
             return cookie_param
@@ -106,18 +116,22 @@ def set_cookie(key, value, days=30):
     <script>
         var date = new Date();
         date.setTime(date.getTime() + ({days} * 24 * 60 * 60 * 1000));
-        document.cookie = "{key}={value}; expires=" + date.toUTCString() + "; path=/; SameSite=Lax";
+        document.cookie = "{key}={value}; expires=" + date.toUTCString() + "; path=/; SameSite=Lax; Secure";
         console.log("Cookie set: {key}={value}");
+        
+        // Also store in localStorage as backup
+        localStorage.setItem('{key}', '{value}');
     </script>
     """
     components.html(js_code, height=0)
-    time.sleep(0.2)  # Give time for cookie to be set
+    time.sleep(0.3)  # Give time for cookie to be set
 
 def delete_cookie(key):
     """Delete a cookie from the browser."""
     components.html(f"""
     <script>
         document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+        localStorage.removeItem('{key}');
         console.log("Cookie deleted: {key}");
     </script>
     """, height=0)
@@ -125,18 +139,32 @@ def delete_cookie(key):
 
 def get_or_create_session_id():
     """
-    Get the session ID from the cookie, or create a new one.
+    Get the session ID from the cookie/localStorage, or create a new one.
     This ID persists across page refreshes.
     """
+    # Try to get from cookie first
     session_id = get_cookie_value('ST_SESSION_ID')
+    
+    # If not in cookie, try localStorage (alternative persistence)
+    if session_id is None:
+        try:
+            # Check if we stored it in session state from previous runs
+            if 'stored_session_id' in st.session_state:
+                session_id = st.session_state.stored_session_id
+        except:
+            pass
+    
+    # If still None, create new one
     if session_id is None:
         session_id = uuid.uuid4().hex
         set_cookie('ST_SESSION_ID', session_id)
+        st.session_state.stored_session_id = session_id
         st.session_state.session_id = session_id
-        # Rerun to apply the cookie and avoid showing the login page briefly
         st.rerun()
     else:
         st.session_state.session_id = session_id
+        st.session_state.stored_session_id = session_id
+    
     return session_id
 
 # ============================================
@@ -265,8 +293,20 @@ def check_authentication():
     if st.session_state.logged_in and st.session_state.token:
         return True
     
-    # 2. Check cookie-based session (survives refresh)
-    session_id = get_or_create_session_id()
+    # 2. Check if we already have a session ID stored
+    session_id = None
+    
+    # Try to get session ID from various sources
+    if st.session_state.session_id:
+        session_id = st.session_state.session_id
+    elif 'stored_session_id' in st.session_state:
+        session_id = st.session_state.stored_session_id
+    
+    # 3. If no session ID in state, try to get/create one from cookie
+    if session_id is None:
+        session_id = get_or_create_session_id()
+    
+    # 4. Check auth state store with this session ID
     auth_state = get_auth_state()
     
     if session_id in auth_state:
@@ -277,6 +317,8 @@ def check_authentication():
         st.session_state.user_email = user_data.get('email')
         st.session_state.logged_in = True
         st.session_state.auth_checked = True
+        st.session_state.session_id = session_id
+        st.session_state.stored_session_id = session_id
         return True
     
     return False
@@ -294,14 +336,21 @@ def login_user(user_data: dict):
     st.session_state.logged_in = True
     st.session_state.auth_checked = True
     
-    # Save to cookie-based session (persists across refreshes)
+    # Get or create session ID
     session_id = get_or_create_session_id()
+    st.session_state.session_id = session_id
+    st.session_state.stored_session_id = session_id
+    
+    # Save to cookie-based session (persists across refreshes)
     auth_state = get_auth_state()
     auth_state[session_id] = {
         'user_id': user_data['user_id'],
         'email': user_data['email'],
         'token': token,
     }
+    
+    # Also store a lightweight auth flag in session state for immediate access
+    st.session_state._auth_verified = True
     
     return token
 
@@ -323,9 +372,38 @@ def logout():
     
     delete_cookie('ST_SESSION_ID')
     
+    # Clear all session state
     st.session_state.token = None
     st.session_state.user_id = None
     st.session_state.user_email = None
     st.session_state.logged_in = False
     st.session_state.auth_checked = False
     st.session_state.session_id = None
+    st.session_state.stored_session_id = None
+    st.session_state._auth_verified = False
+    
+    # Force rerun to reflect changes
+    st.rerun()
+
+# ============================================
+# ALTERNATIVE: Query Parameter Auth (More Reliable on Cloud)
+# ============================================
+
+def set_auth_via_query_params(token: str):
+    """Set authentication via query parameters (more reliable on Streamlit Cloud)"""
+    st.query_params['auth_token'] = token
+    st.query_params['auth_timestamp'] = str(time.time())
+
+def get_auth_from_query_params():
+    """Get authentication from query parameters"""
+    token = st.query_params.get('auth_token')
+    timestamp = st.query_params.get('auth_timestamp')
+    
+    if token and timestamp:
+        # Check if timestamp is recent (within last hour)
+        try:
+            if time.time() - float(timestamp) < 3600:  # 1 hour
+                return token
+        except:
+            pass
+    return None
