@@ -9,12 +9,21 @@ import streamlit.components.v1 as components
 # ============================================
 # IMPORT AUTHENTICATION MODULE
 # ============================================
-from auth import require_auth, logout
+from auth import init_session_state, require_auth
 
 # ============================================
-# REQUIRE AUTHENTICATION FIRST
+# REQUIRE AUTHENTICATION WITH TIME GAP
 # ============================================
+
+# Add small delay to handle async issues
+time.sleep(0.5)
+
+# This will check both session state and query params
 require_auth()
+
+# Add another small delay after authentication
+time.sleep(0.5)
+
 
 # Now proceed with the rest of the imports
 from Notes_Quiz_Section import (
@@ -239,6 +248,10 @@ def add_message_to_current_session(role, message):
 # ============================================
 # Header Section
 # ============================================
+# Get user info from either st.user or session state
+user_email = st.user.email if hasattr(st, 'user') and st.user else st.session_state.get('user_email', 'Unknown')
+user_id = st.user.user_id if hasattr(st, 'user') and st.user else st.session_state.get('user_id', 'Unknown')
+
 st.markdown(
     f"""
     <div class="header-card">
@@ -250,7 +263,10 @@ st.markdown(
                 <h1>Meet StudyBuddy</h1>
                 <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
                 <p style="font-size:12px; color:#8a7bff;">
-                    👤 Logged in as: {st.session_state.user_email}
+                    👤 Logged in as: {user_email}
+                </p>
+                <p style="font-size:11px; color:#64748b;">
+                    🆔 User ID: {user_id}
                 </p>
             </div>
         </div>
@@ -274,13 +290,29 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown("###  Welcome to **Study Buddy 👋**")
-    st.markdown(f"**User ID:** {st.session_state.user_id}")
+    st.markdown(f"**User ID:** {user_id}")
     
-    # Logout button
+    # Custom Logout button (since st.logout doesn't accept callback in this version)
     if st.button("🚪 Logout", use_container_width=True, type="secondary"):
-        logout()
-        st.rerun()
+        # Clear session state
+        for key in ['token', 'user_id', 'user_email', 'logged_in', 'auth_checked']:
+            if key in st.session_state:
+                st.session_state[key] = None if key != 'logged_in' else False
+        
+        # Clear localStorage via JavaScript
+        components.html("""
+        <script>
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem('token_timestamp');
+            window.location.href = window.location.pathname;
+        </script>
+        """, height=0)
+        
+        # Redirect to login
+        st.switch_page("app.py")
+        st.stop()
     
+    st.markdown("---")
     st.markdown("### 💬 Chat Sessions")
 
     if st.button("🆕 Start New Chat", use_container_width=True):
@@ -318,6 +350,8 @@ with st.sidebar:
             st.rerun()
     else:
         st.info("No chat sessions yet!")
+
+
 
 # ============================================
 # MAIN TABS WITH ICONS
@@ -414,7 +448,7 @@ with tab1:
                 response_stream = get_gemini_response(
                     st.session_state.last_user_message, 
                     st.session_state.last_chat_messages, 
-                    st.session_state.user_id
+                    st.user.user_id if st.user else None
                 )
                 
                 user_question = st.session_state.last_user_message
@@ -440,7 +474,7 @@ with tab1:
                     if full_response and user_question:
                         add_message_to_current_session("bot", full_response)
                         save_conversation_to_pinecone(
-                            user_id=st.session_state.user_id,
+                            user_id=st.user.user_id if st.user else None,
                             question=user_question,
                             answer=full_response,
                             contexts=[]
@@ -509,7 +543,7 @@ with tab2:
             result = evaluate_quiz_attempt(
                 st.session_state.quiz,
                 answers_for_evaluation,
-                st.session_state.user_id
+                st.user.user_id if st.user else None
             )
             
             # Score metrics
@@ -590,6 +624,7 @@ with tab2:
                     st.session_state.last_clicked_option = None
                     st.session_state.attempt += 1
                     st.session_state.need_rerun = True
+                    st.rerun()
             
             with col2:
                 if st.button("📚 Study More", use_container_width=True):
@@ -609,7 +644,6 @@ with tab2:
     
     # Quiz Active State
     elif st.session_state.quiz and not st.session_state.completed:
-        # [Keep your existing quiz logic here - it's too long to repeat]
         st.info("Quiz is in progress...")
     
     # No Quiz - Setup State
@@ -716,7 +750,7 @@ with tab2:
                 
                 quiz_data = generate_quiz_from_notes(
                     notes_text=input_text,
-                    user_id=st.session_state.user_id,
+                    user_id=st.user.user_id if st.user else None,
                     num_questions=st.session_state.num_questions,
                     difficulty=st.session_state.difficulty.lower(),
                 )
@@ -757,7 +791,7 @@ with tab3:
         st.rerun()
     
     try:
-        data = fetch_progress_from_pinecone(st.session_state.user_id)
+        data = fetch_progress_from_pinecone(st.user.user_id if st.user else None)
         
         if data and data.get("progress"):
             summary = data.get("summary", {})
