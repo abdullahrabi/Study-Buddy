@@ -51,7 +51,7 @@ def init_session_state():
         st.session_state.cookie_processed = False
 
 # ============================================
-# COOKIE HELPER FUNCTIONS (Using st.context)
+# COOKIE HELPER FUNCTIONS (Using st.markdown with HTML)
 # ============================================
 
 def get_cookie_value(key):
@@ -78,7 +78,7 @@ def get_cookie_value(key):
     return None
 
 def set_cookie(key, value, days=30):
-    """Set a cookie in the browser using st.iframe."""
+    """Set a cookie in the browser using st.markdown (no deprecation warnings)."""
     js_code = f"""
     <script>
         var date = new Date();
@@ -87,18 +87,19 @@ def set_cookie(key, value, days=30):
         console.log("Cookie set: {key}={value}");
     </script>
     """
-    st.iframe(js_code, height=1)
+    # Using st.markdown with unsafe_allow_html=True to inject JavaScript
+    st.markdown(f'<div style="display:none">{js_code}</div>', unsafe_allow_html=True)
     time.sleep(0.1)
 
 def delete_cookie(key):
-    """Delete a cookie from the browser using st.iframe."""
+    """Delete a cookie from the browser using st.markdown (no deprecation warnings)."""
     js_code = f"""
     <script>
         document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
         console.log("Cookie deleted: {key}");
     </script>
     """
-    st.iframe(js_code, height=1)
+    st.markdown(f'<div style="display:none">{js_code}</div>', unsafe_allow_html=True)
     time.sleep(0.1)
 
 def get_or_create_session_id():
