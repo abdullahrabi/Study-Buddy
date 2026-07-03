@@ -47,9 +47,11 @@ def init_session_state():
         st.session_state.auth_checked = False
     if 'session_id' not in st.session_state:
         st.session_state.session_id = None
+    if 'cookie_set_attempted' not in st.session_state:
+        st.session_state.cookie_set_attempted = False
 
 # ============================================
-# COOKIE HELPER FUNCTIONS (Using st.iframe)
+# COOKIE HELPER FUNCTIONS
 # ============================================
 
 def get_cookie_value(key):
@@ -82,9 +84,9 @@ def set_cookie(key, value, days=30):
         console.log("Cookie set: {key}={value}");
     </script>
     """
-    # Using height=1 as minimum valid positive integer for st.iframe
     st.iframe(js_code, height=1)
-    time.sleep(0.2)  # Give time for cookie to be set
+    # No time.sleep() here to avoid blocking
+    st.session_state.cookie_set_attempted = True
 
 def delete_cookie(key):
     """Delete a cookie from the browser using st.iframe."""
@@ -94,7 +96,6 @@ def delete_cookie(key):
         console.log("Cookie deleted: {key}");
     </script>
     """
-    # Using height=1 as minimum valid positive integer for st.iframe
     st.iframe(js_code, height=1)
     time.sleep(0.2)  # Give time for cookie to be deleted
 
@@ -103,16 +104,29 @@ def get_or_create_session_id():
     Get the session ID from the cookie, or create a new one.
     This ID persists across page refreshes.
     """
+    # First check if we already have a session_id in session_state
+    if st.session_state.session_id:
+        return st.session_state.session_id
+    
+    # Check if cookie exists
     session_id = get_cookie_value('ST_SESSION_ID')
-    if session_id is None:
+    
+    if session_id is None and not st.session_state.cookie_set_attempted:
+        # Create new session ID
         session_id = uuid.uuid4().hex
         set_cookie('ST_SESSION_ID', session_id)
         st.session_state.session_id = session_id
-        # Rerun to apply the cookie and avoid showing the login page briefly
-        st.rerun()
-    else:
+        
+        # Important: Rerun to apply the cookie
+        # Use a flag to prevent infinite loop
+        if not st.session_state.cookie_set_attempted:
+            st.session_state.cookie_set_attempted = True
+            st.rerun()
+            return session_id
+    elif session_id:
         st.session_state.session_id = session_id
-    return session_id
+    
+    return st.session_state.session_id
 
 # ============================================
 # AUTH STATE STORE (Singleton)
@@ -304,3 +318,4 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.auth_checked = False
     st.session_state.session_id = None
+    st.session_state.cookie_set_attempted = False
