@@ -47,31 +47,34 @@ def init_session_state():
         st.session_state.auth_checked = False
     if 'session_id' not in st.session_state:
         st.session_state.session_id = None
-    if 'cookie_set_attempted' not in st.session_state:
-        st.session_state.cookie_set_attempted = False
+    if 'cookie_processed' not in st.session_state:
+        st.session_state.cookie_processed = False
 
 # ============================================
-# COOKIE HELPER FUNCTIONS
+# COOKIE HELPER FUNCTIONS (Using st.context)
 # ============================================
 
 def get_cookie_value(key):
-    """Safely get a cookie value from the request headers."""
+    """
+    Safely get a cookie value from the request headers using st.context.
+    This is the official Streamlit API (1.36.0+).
+    """
     try:
+        # Use the official st.context API
         headers = st.context.headers
-    except AttributeError:
-        try:
-            from streamlit.web.server.websocket_headers import _get_websocket_headers
-            headers = _get_websocket_headers()
-        except:
-            headers = None
-        
-    if headers is not None:
-        cookie_str = headers.get("Cookie")
-        if cookie_str:
-            cookie = SimpleCookie(cookie_str)
-            cookie_value = cookie.get(key)
-            if cookie_value:
-                return cookie_value.value
+        if headers:
+            cookie_str = headers.get("Cookie")
+            if cookie_str:
+                cookie = SimpleCookie(cookie_str)
+                cookie_value = cookie.get(key)
+                if cookie_value:
+                    return cookie_value.value
+    except AttributeError as e:
+        # Fallback for older Streamlit versions
+        print(f"st.context not available: {e}")
+    except Exception as e:
+        print(f"Error getting cookie: {e}")
+    
     return None
 
 def set_cookie(key, value, days=30):
@@ -85,8 +88,7 @@ def set_cookie(key, value, days=30):
     </script>
     """
     st.iframe(js_code, height=1)
-    # No time.sleep() here to avoid blocking
-    st.session_state.cookie_set_attempted = True
+    time.sleep(0.1)
 
 def delete_cookie(key):
     """Delete a cookie from the browser using st.iframe."""
@@ -97,36 +99,33 @@ def delete_cookie(key):
     </script>
     """
     st.iframe(js_code, height=1)
-    time.sleep(0.2)  # Give time for cookie to be deleted
+    time.sleep(0.1)
 
 def get_or_create_session_id():
     """
     Get the session ID from the cookie, or create a new one.
     This ID persists across page refreshes.
     """
-    # First check if we already have a session_id in session_state
-    if st.session_state.session_id:
+    # Check if we already processed the cookie in this run
+    if st.session_state.cookie_processed:
         return st.session_state.session_id
     
-    # Check if cookie exists
     session_id = get_cookie_value('ST_SESSION_ID')
     
-    if session_id is None and not st.session_state.cookie_set_attempted:
-        # Create new session ID
+    if session_id is None:
+        # No cookie exists, create one
         session_id = uuid.uuid4().hex
         set_cookie('ST_SESSION_ID', session_id)
         st.session_state.session_id = session_id
-        
-        # Important: Rerun to apply the cookie
-        # Use a flag to prevent infinite loop
-        if not st.session_state.cookie_set_attempted:
-            st.session_state.cookie_set_attempted = True
-            st.rerun()
-            return session_id
-    elif session_id:
+        st.session_state.cookie_processed = True
+        # Rerun once to apply the cookie
+        st.rerun()
+        return session_id
+    else:
+        # Cookie exists, store it and mark as processed
         st.session_state.session_id = session_id
-    
-    return st.session_state.session_id
+        st.session_state.cookie_processed = True
+        return session_id
 
 # ============================================
 # AUTH STATE STORE (Singleton)
@@ -255,18 +254,19 @@ def check_authentication():
         return True
     
     # 2. Check cookie-based session (survives refresh)
-    session_id = get_or_create_session_id()
-    auth_state = get_auth_state()
-    
-    if session_id in auth_state:
-        # Restore session from the auth state store
-        user_data = auth_state[session_id]
-        st.session_state.token = user_data.get('token')
-        st.session_state.user_id = user_data.get('user_id')
-        st.session_state.user_email = user_data.get('email')
-        st.session_state.logged_in = True
-        st.session_state.auth_checked = True
-        return True
+    if not st.session_state.cookie_processed:
+        session_id = get_or_create_session_id()
+        auth_state = get_auth_state()
+        
+        if session_id in auth_state:
+            # Restore session from the auth state store
+            user_data = auth_state[session_id]
+            st.session_state.token = user_data.get('token')
+            st.session_state.user_id = user_data.get('user_id')
+            st.session_state.user_email = user_data.get('email')
+            st.session_state.logged_in = True
+            st.session_state.auth_checked = True
+            return True
     
     return False
 
@@ -318,4 +318,4 @@ def logout():
     st.session_state.logged_in = False
     st.session_state.auth_checked = False
     st.session_state.session_id = None
-    st.session_state.cookie_set_attempted = False
+    st.session_state.cookie_processed = False
