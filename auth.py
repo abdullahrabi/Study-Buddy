@@ -49,7 +49,7 @@ def init_session_state():
         st.session_state.session_id = None
 
 # ============================================
-# COOKIE HELPER FUNCTIONS (UPDATED TO USE st.iframe)
+# COOKIE HELPER FUNCTIONS (Using st.iframe)
 # ============================================
 
 def get_cookie_value(key):
@@ -82,17 +82,20 @@ def set_cookie(key, value, days=30):
         console.log("Cookie set: {key}={value}");
     </script>
     """
-    st.iframe(js_code, height=0)
+    # Using height=1 as minimum valid positive integer for st.iframe
+    st.iframe(js_code, height=1)
     time.sleep(0.2)  # Give time for cookie to be set
 
 def delete_cookie(key):
     """Delete a cookie from the browser using st.iframe."""
-    st.iframe(f"""
+    js_code = f"""
     <script>
         document.cookie = "{key}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
         console.log("Cookie deleted: {key}");
     </script>
-    """, height=0)
+    """
+    # Using height=1 as minimum valid positive integer for st.iframe
+    st.iframe(js_code, height=1)
     time.sleep(0.2)  # Give time for cookie to be deleted
 
 def get_or_create_session_id():
