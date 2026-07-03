@@ -557,22 +557,25 @@ def display_option_buttons(question_idx, options, current_selection, answer_type
                 st.session_state.need_rerun = True
                 st.rerun()
 
-# -----------------------------
-# HEADER
-# -----------------------------
 st.markdown(
-    f"""<div class="header-card"><div class="header-inner">
-       <div class="header-avatar">
-         <img src="data:image/png;base64,'https://cdn-icons-png.flaticon.com/512/4712/4712109.png'">
-       </div>
-       <div><h1>Meet StudyBuddy</h1>
-         <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
-         <p style="font-size: 12px; color: #8a7bff;">👤 Logged in as: {st.session_state.user_email}</p>
-       </div>
-    </div></div>""",
+    f"""
+    <div class="header-card">
+        <div class="header-inner">
+            <div class="header-avatar">
+                <img src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png">
+            </div>
+            <div>
+                <h1>Meet StudyBuddy</h1>
+                <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
+                <p style="font-size:12px; color:#8a7bff;">
+                    👤 Logged in as: {st.session_state.user_email}
+                </p>
+            </div>
+        </div>
+    </div>
+    """,
     unsafe_allow_html=True,
 )
-
 # -----------------------------
 # SIDEBAR: Chat History
 # -----------------------------
