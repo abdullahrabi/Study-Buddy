@@ -189,6 +189,15 @@ div[data-testid="stVerticalBlock"] {
     padding:0 !important;
 }
 
+    div[data-testid="stToast"] {
+        background-color: rgba(79, 222, 216, 0.4) !important; /* Changes background to blue */
+    }
+    div[data-testid="stToast"] p {
+        color: #d4dcec !important;            /* Forces text inside to be white */
+    }
+    
+
+
 .header-card {
     max-width:1100px;
     margin:0 auto 12px auto;
@@ -209,7 +218,7 @@ div[data-testid="stVerticalBlock"] {
 
 .header-avatar img{
     width:90px;
-    height: 90px;
+    height: 190px;
     border-radius:8px;
 }
 

@@ -1,14 +1,15 @@
-# Login_Signup.py - Fully Fixed
+# Login_Signup.py - Fully Fixed with Local Storage
 import streamlit as st
 import os
 import time
 import hashlib
 import json
-from datetime import datetime, timedelta  # Removed timezone import
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from pinecone import Pinecone
 import bcrypt
 import jwt
+import streamlit.components.v1 as components
 
 load_dotenv()
 
@@ -18,7 +19,6 @@ load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-# Use a strong key (at least 32 characters)
 JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-at-least-32-characters-long")
 
 # ============================================
@@ -32,6 +32,61 @@ st.set_page_config(
 )
 
 # ============================================
+# JAVASCRIPT FOR LOCAL STORAGE MANAGEMENT
+# ============================================
+
+def get_local_storage_js():
+    """JavaScript to handle local storage operations"""
+    return """
+    <script>
+    // Function to set token in local storage
+    function setToken(token) {
+        if (token) {
+            localStorage.setItem('auth_token', token);
+            localStorage.setItem('token_timestamp', Date.now().toString());
+            return true;
+        }
+        return false;
+    }
+    
+    // Function to get token from local storage
+    function getToken() {
+        return localStorage.getItem('auth_token');
+    }
+    
+    // Function to remove token from local storage
+    function removeToken() {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('token_timestamp');
+    }
+    
+    // Function to check if token is expired
+    function isTokenExpired() {
+        const timestamp = localStorage.getItem('token_timestamp');
+        if (!timestamp) return true;
+        const now = Date.now();
+        const expiryTime = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+        return (now - parseInt(timestamp)) > expiryTime;
+    }
+    
+    // Check token on page load and send to Streamlit
+    window.onload = function() {
+        const token = getToken();
+        const expired = isTokenExpired();
+        if (token && !expired) {
+            // Send token to Streamlit backend
+            window.parent.postMessage({
+                type: 'streamlit:setComponentValue',
+                value: token
+            }, '*');
+        } else if (expired) {
+            removeToken();
+        }
+    };
+    </script>
+    """
+
+# ============================================
 # SESSION STATE
 # ============================================
 
@@ -43,16 +98,85 @@ if 'user_email' not in st.session_state:
     st.session_state.user_email = None
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+if 'token_from_storage' not in st.session_state:
+    st.session_state.token_from_storage = None
+
+# ============================================
+# CHECK LOCAL STORAGE FOR TOKEN
+# ============================================
+
+# Embed JavaScript to read from local storage
+components.html(get_local_storage_js(), height=0)
+
+# Try to get token from local storage via query params
+# This is a workaround since Streamlit doesn't directly access localStorage
+query_params = st.query_params
+token_from_url = query_params.get("token", None)
+
+if token_from_url:
+    # Validate the token
+    try:
+        decoded = jwt.decode(token_from_url, JWT_SECRET, algorithms=['HS256'])
+        # Check if token is expired
+        exp = decoded.get('exp')
+        if exp and datetime.utcfromtimestamp(exp) > datetime.utcnow():
+            st.session_state.token = token_from_url
+            st.session_state.user_id = decoded.get('user_id')
+            st.session_state.user_email = decoded.get('email')
+            st.session_state.logged_in = True
+            # Clear the query params after setting session
+            st.query_params.clear()
+    except jwt.ExpiredSignatureError:
+        pass
+    except jwt.InvalidTokenError:
+        pass
+
+# ============================================
+# LOAD CSS
+# ============================================
+
+def load_css():
+    """Load CSS from external file"""
+    css_file = "style.css"
+    if os.path.exists(css_file):
+        with open(css_file, "r") as f:
+            css_content = f.read()
+        st.markdown(f"<style>{css_content}</style>", unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <style>
+            html, body, [data-testid="stAppViewContainer"] {
+                background: linear-gradient(180deg, #061022, #0b1523) !important;
+                color: #e6eef9 !important;
+            }
+            .stTabs [data-baseweb="tab-list"] {
+                gap: 0px;
+                margin-bottom: -10px;
+            }
+            .stTabs [data-baseweb="tab"] {
+                padding: 8px 16px;
+                margin: 0px;
+            }
+            .stTabs [role="tabpanel"] {
+                padding-top: 5px;
+            }
+            .stForm {
+                margin-top: 0px;
+                padding-top: 0px;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+
+load_css()
 
 # ============================================
 # REDIRECT TO MAIN APP IF LOGGED IN
 # ============================================
 
 if st.session_state.logged_in and st.session_state.token:
-    # Check if main.py exists in the same directory
-     st.switch_page("pages/main.py")
-     st.stop()
-   
+    st.switch_page("pages/main.py")
+    st.stop()
+
 # ============================================
 # PINECONE SETUP
 # ============================================
@@ -147,251 +271,137 @@ def generate_jwt(user_id: str, email: str) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
 # ============================================
-# CSS STYLING
+# JAVASCRIPT TO SET TOKEN IN LOCAL STORAGE
 # ============================================
 
-st.markdown("""
-<style>
-    /* Main container */
-    .auth-container {
-        max-width: 420px;
-        margin: 0 auto;
-        padding: 40px 30px;
-        background: white;
-        border-radius: 16px;
-        box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-        border: 1px solid #e8ecf1;
-    }
-    
-    /* Header */
-    .auth-header {
-        text-align: center;
-        margin-bottom: 32px;
-    }
-    .auth-header h1 {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #1a1a2e;
-        margin: 0;
-    }
-    .auth-header .emoji {
-        font-size: 3rem;
-        display: block;
-        margin-bottom: 8px;
-    }
-    .auth-header .subtitle {
-        color: #6b7280;
-        font-size: 0.95rem;
-        margin-top: 4px;
-    }
-    
-    /* Form elements */
-    .stTextInput > div > div > input {
-        border-radius: 10px !important;
-        border: 1.5px solid #e5e7eb !important;
-        padding: 12px 16px !important;
-        font-size: 0.95rem !important;
-        transition: border-color 0.2s ease !important;
-    }
-    .stTextInput > div > div > input:focus {
-        border-color: #6366f1 !important;
-        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12) !important;
-    }
-    
-    /* Buttons */
-    .stButton > button {
-        width: 100% !important;
-        border-radius: 10px !important;
-        padding: 12px !important;
-        font-weight: 600 !important;
-        font-size: 1rem !important;
-        transition: all 0.2s ease !important;
-        background: #6366f1 !important;
-        color: white !important;
-        border: none !important;
-        cursor: pointer !important;
-    }
-    .stButton > button:hover {
-        background: #4f46e5 !important;
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
-    }
-    
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #f3f4f6;
-        border-radius: 12px;
-        padding: 4px;
-    }
-    .stTabs [data-baseweb="tab"] {
-        border-radius: 8px !important;
-        padding: 8px 20px !important;
-        font-weight: 500 !important;
-        color: #6b7280 !important;
-        transition: all 0.2s ease !important;
-    }
-    .stTabs [data-baseweb="tab"][aria-selected="true"] {
-        background: white !important;
-        color: #1a1a2e !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-    }
-    
-    /* Divider */
-    .divider {
-        display: flex;
-        align-items: center;
-        margin: 20px 0;
-        color: #9ca3af;
-        font-size: 0.85rem;
-    }
-    .divider::before, .divider::after {
-        content: "";
-        flex: 1;
-        border-bottom: 1px solid #e5e7eb;
-    }
-    .divider::before { margin-right: 16px; }
-    .divider::after { margin-left: 16px; }
-    
-    /* Alerts */
-    .stAlert {
-        border-radius: 10px !important;
-        padding: 12px 16px !important;
-    }
-    
-    /* Footer */
-    .auth-footer {
-        text-align: center;
-        margin-top: 20px;
-        color: #9ca3af;
-        font-size: 0.8rem;
-    }
-    .auth-footer a {
-        color: #6366f1;
-        text-decoration: none;
-    }
-</style>
-""", unsafe_allow_html=True)
+def set_token_in_storage(token):
+    """Inject JavaScript to save token to localStorage"""
+    js_code = f"""
+    <script>
+        localStorage.setItem('auth_token', '{token}');
+        localStorage.setItem('token_timestamp', Date.now().toString());
+        console.log('Token saved to localStorage');
+    </script>
+    """
+    components.html(js_code, height=0)
 
 # ============================================
 # LOGIN / SIGNUP UI
 # ============================================
 
-# Header
-st.markdown("""
-<div class="auth-header">
-    <span class="emoji">🤖</span>
-    <h1>StudyBuddy</h1>
-    <div class="subtitle">Your AI Study Assistant</div>
-</div>
-""", unsafe_allow_html=True)
+# Header Section
+st.markdown(
+    """
+    <div class="header-card">
+        <div class="header-inner">
+            <div class="header-avatar">
+                <img src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png">
+            </div>
+            <div>
+                <h1>Meet StudyBuddy</h1>
+                <p>Your Personal AI Learning Assistant with Advanced Quiz Features</p>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
-# Container
-with st.container():
-    st.markdown('<div class="auth-container">', unsafe_allow_html=True)
-    
-    # Tabs
-    tab1, tab2 = st.tabs(["🔐 Login", "📝 Sign Up"])
-    
-    # ============================================
-    # LOGIN TAB
-    # ============================================
-    with tab1:
-        with st.form("login_form", clear_on_submit=False):
-            email = st.text_input(
-                "Email Address",
-                placeholder="you@example.com",
-                key="login_email"
-            )
-            password = st.text_input(
-                "Password",
-                type="password",
-                placeholder="Enter your password",
-                key="login_password"
-            )
-            
-            submitted = st.form_submit_button("Login")
-            
-            if submitted:
-                if not email or not password:
-                    st.error("❌ Please fill in all fields.")
-                else:
-                    with st.spinner("Logging in..."):
-                        user = verify_user(email, password)
-                        if user:
-                            token = generate_jwt(user['user_id'], user['email'])
-                            st.session_state.token = token
-                            st.session_state.user_id = user['user_id']
-                            st.session_state.user_email = user['email']
-                            st.session_state.logged_in = True
-                            st.success(f"✅ Welcome back, {user['email']}!")
-                            time.sleep(0.5)
-                            st.rerun()
-                        else:
-                            st.error("❌ Invalid email or password.")
-            
-            # Divider
-            st.markdown('<div class="divider">or</div>', unsafe_allow_html=True)
-            
-            # Quick demo note
-            st.info("💡 Demo: Use 'demo@example.com' / 'password123'")
-    
-    # ============================================
-    # SIGNUP TAB
-    # ============================================
-    with tab2:
-        with st.form("signup_form", clear_on_submit=True):
-            email = st.text_input(
-                "Email Address",
-                placeholder="you@example.com",
-                key="signup_email"
-            )
-            password = st.text_input(
-                "Password",
-                type="password",
-                placeholder="At least 6 characters",
-                key="signup_password"
-            )
-            confirm_password = st.text_input(
-                "Confirm Password",
-                type="password",
-                placeholder="Confirm your password",
-                key="signup_confirm"
-            )
-            
-            submitted = st.form_submit_button("Create Account")
-            
-            if submitted:
-                if not email or not password or not confirm_password:
-                    st.error("❌ Please fill in all fields.")
-                elif password != confirm_password:
-                    st.error("❌ Passwords do not match.")
-                elif len(password) < 6:
-                    st.error("❌ Password must be at least 6 characters.")
-                else:
-                    with st.spinner("Creating account..."):
-                        user = create_user(email, password)
-                        if user:
-                            token = generate_jwt(user['user_id'], user['email'])
-                            st.session_state.token = token
-                            st.session_state.user_id = user['user_id']
-                            st.session_state.user_email = user['email']
-                            st.session_state.logged_in = True
-                            st.success(f"✅ Account created! Welcome, {user['email']}!")
-                            time.sleep(0.5)
-                            st.rerun()
-                        else:
-                            st.error("❌ User with this email already exists.")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+# Tabs Section
+tab1, tab2 = st.tabs(["🔐 Sign In", "✨ Create Account"])
 
 # ============================================
-# FOOTER
+# LOGIN TAB
 # ============================================
+with tab1:
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input(
+            "Email Address",
+            placeholder="you@example.com",
+            key="login_email"
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="Enter your password",
+            key="login_password"
+        )
+        
+        submitted = st.form_submit_button("Login", use_container_width=True)
+        
+        if submitted:
+            if not email or not password:
+                st.toast("❌ Please fill in all fields.")
+            else:
+                with st.spinner("Logging in..."):
+                    user = verify_user(email, password)
+                    if user:
+                        token = generate_jwt(user['user_id'], user['email'])
+                        
+                        # Store token in session state
+                        st.session_state.token = token
+                        st.session_state.user_id = user['user_id']
+                        st.session_state.user_email = user['email']
+                        st.session_state.logged_in = True
+                        
+                        # Save token to localStorage
+                        set_token_in_storage(token)
+                        
+                        st.toast(f"✅ Welcome back, {user['email']}!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.toast("❌ Invalid email or password.")
 
-st.markdown("""
-<div class="auth-footer">
-    🔒 Secure authentication with JWT & Pinecone<br>
-    <span style="color: #d1d5db;">v1.0</span>
-</div>
-""", unsafe_allow_html=True)
+# ============================================
+# SIGNUP TAB
+# ============================================
+with tab2:
+    with st.form("signup_form", clear_on_submit=True):
+        email = st.text_input(
+            "Email Address",
+            placeholder="you@example.com",
+            key="signup_email"
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="At least 6 characters",
+            key="signup_password"
+        )
+        confirm_password = st.text_input(
+            "Confirm Password",
+            type="password",
+            placeholder="Confirm your password",
+            key="signup_confirm"
+        )
+        
+        submitted = st.form_submit_button("Create Account", use_container_width=True)
+        
+        if submitted:
+            if not email or not password or not confirm_password:
+                st.toast("❌ Please fill in all fields.")
+            elif password != confirm_password:
+                st.toast("❌ Passwords do not match.")
+            elif len(password) < 6:
+                st.toast("❌ Password must be at least 6 characters.")
+            else:
+                with st.spinner("Creating account..."):
+                    user = create_user(email, password)
+                    if user:
+                        token = generate_jwt(user['user_id'], user['email'])
+                        
+                        # Store token in session state
+                        st.session_state.token = token
+                        st.session_state.user_id = user['user_id']
+                        st.session_state.user_email = user['email']
+                        st.session_state.logged_in = True
+                        
+                        # Save token to localStorage
+                        set_token_in_storage(token)
+                        
+                        st.toast(f"✅ Account created! Welcome, {user['email']}!")
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.toast("❌ User with this email already exists.")
