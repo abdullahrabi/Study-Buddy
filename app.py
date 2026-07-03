@@ -1,15 +1,17 @@
-# Login_Signup.py - Fully Fixed with Local Storage
+# app.py - Login/Signup Page
 import streamlit as st
 import os
 import time
-import hashlib
-import json
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 from pinecone import Pinecone
 import bcrypt
 import jwt
 import streamlit.components.v1 as components
+import secrets
+
+# Import auth module
+from auth import init_session_state
 
 load_dotenv()
 
@@ -19,7 +21,11 @@ load_dotenv()
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-JWT_SECRET = os.getenv("JWT_SECRET", "your-super-secret-key-at-least-32-characters-long")
+
+# JWT Secret
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET or len(JWT_SECRET) < 32:
+    JWT_SECRET = secrets.token_urlsafe(32)
 
 # ============================================
 # PAGE CONFIG
@@ -32,104 +38,74 @@ st.set_page_config(
 )
 
 # ============================================
-# JAVASCRIPT FOR LOCAL STORAGE MANAGEMENT
+# INITIALIZE SESSION STATE
 # ============================================
 
-def get_local_storage_js():
-    """JavaScript to handle local storage operations"""
-    return """
-    <script>
-    // Function to set token in local storage
-    function setToken(token) {
-        if (token) {
-            localStorage.setItem('auth_token', token);
-            localStorage.setItem('token_timestamp', Date.now().toString());
-            return true;
-        }
-        return false;
-    }
-    
-    // Function to get token from local storage
-    function getToken() {
-        return localStorage.getItem('auth_token');
-    }
-    
-    // Function to remove token from local storage
-    function removeToken() {
-        localStorage.removeItem('auth_token');
-        localStorage.removeItem('token_timestamp');
-    }
-    
-    // Function to check if token is expired
-    function isTokenExpired() {
-        const timestamp = localStorage.getItem('token_timestamp');
-        if (!timestamp) return true;
-        const now = Date.now();
-        const expiryTime = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
-        return (now - parseInt(timestamp)) > expiryTime;
-    }
-    
-    // Check token on page load and send to Streamlit
-    window.onload = function() {
-        const token = getToken();
-        const expired = isTokenExpired();
-        if (token && !expired) {
-            // Send token to Streamlit backend
-            window.parent.postMessage({
-                type: 'streamlit:setComponentValue',
-                value: token
-            }, '*');
-        } else if (expired) {
-            removeToken();
-        }
-    };
-    </script>
-    """
+init_session_state()
 
 # ============================================
-# SESSION STATE
+# CHECK IF ALREADY AUTHENTICATED
 # ============================================
 
-if 'token' not in st.session_state:
-    st.session_state.token = None
-if 'user_id' not in st.session_state:
-    st.session_state.user_id = None
-if 'user_email' not in st.session_state:
-    st.session_state.user_email = None
-if 'logged_in' not in st.session_state:
-    st.session_state.logged_in = False
-if 'token_from_storage' not in st.session_state:
-    st.session_state.token_from_storage = None
-
-# ============================================
-# CHECK LOCAL STORAGE FOR TOKEN
-# ============================================
-
-# Embed JavaScript to read from local storage
-components.html(get_local_storage_js(), height=0)
-
-# Try to get token from local storage via query params
-# This is a workaround since Streamlit doesn't directly access localStorage
+# Check if token is in URL (from localStorage redirect)
 query_params = st.query_params
 token_from_url = query_params.get("token", None)
 
-if token_from_url:
-    # Validate the token
+if token_from_url and not st.session_state.auth_checked:
     try:
         decoded = jwt.decode(token_from_url, JWT_SECRET, algorithms=['HS256'])
-        # Check if token is expired
         exp = decoded.get('exp')
-        if exp and datetime.utcfromtimestamp(exp) > datetime.utcnow():
+        if exp and datetime.fromtimestamp(exp, tz=timezone.utc) > datetime.now(timezone.utc):
             st.session_state.token = token_from_url
             st.session_state.user_id = decoded.get('user_id')
             st.session_state.user_email = decoded.get('email')
             st.session_state.logged_in = True
-            # Clear the query params after setting session
+            st.session_state.auth_checked = True
             st.query_params.clear()
-    except jwt.ExpiredSignatureError:
-        pass
-    except jwt.InvalidTokenError:
-        pass
+            # Redirect to main page immediately
+            st.switch_page("pages/main.py")
+            st.stop()
+        else:
+            st.query_params.clear()
+    except Exception as e:
+        print(f"Token validation error: {e}")
+        st.query_params.clear()
+
+# If already logged in via session state
+if st.session_state.logged_in and st.session_state.token:
+    st.switch_page("pages/main.py")
+    st.stop()
+
+# ============================================
+# JAVASCRIPT FOR LOCAL STORAGE
+# ============================================
+
+def inject_auth_js():
+    """Inject JavaScript to check localStorage for token"""
+    js_code = """
+    <script>
+    if (!window.location.search.includes('token=')) {
+        const token = localStorage.getItem('auth_token');
+        if (token) {
+            const timestamp = localStorage.getItem('token_timestamp');
+            if (timestamp) {
+                const now = Date.now();
+                const expiryTime = 7 * 24 * 60 * 60 * 1000;
+                if ((now - parseInt(timestamp)) > expiryTime) {
+                    localStorage.removeItem('auth_token');
+                    localStorage.removeItem('token_timestamp');
+                    return;
+                }
+            }
+            const currentUrl = window.location.href.split('?')[0];
+            window.location.href = currentUrl + '?token=' + encodeURIComponent(token);
+        }
+    }
+    </script>
+    """
+    components.html(js_code, height=0)
+
+inject_auth_js()
 
 # ============================================
 # LOAD CSS
@@ -164,18 +140,84 @@ def load_css():
                 margin-top: 0px;
                 padding-top: 0px;
             }
+            .header-card {
+                background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.15));
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 20px;
+                padding: 25px;
+                text-align: center;
+                margin-bottom: 20px;
+            }
+            .header-inner {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 15px;
+            }
+            .header-avatar {
+                flex-shrink: 0;
+                width: 60px;
+                height: 60px;
+                background: linear-gradient(135deg, #6366f1, #a855f7);
+                border-radius: 50%;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 10px;
+            }
+            .header-avatar img {
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+                filter: brightness(0) invert(1);
+            }
+            .header-inner h1 {
+                font-size: 24px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #818cf8, #c084fc);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                margin: 0;
+            }
+            .header-inner p {
+                font-size: 13px;
+                color: #94a3b8;
+                margin: 5px 0 0 0;
+                -webkit-text-fill-color: #94a3b8;
+            }
+            .stButton button {
+                background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+                color: white !important;
+                border: none !important;
+                border-radius: 12px !important;
+                font-weight: 600 !important;
+                transition: all 0.3s ease;
+            }
+            .stButton button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 25px rgba(99, 102, 241, 0.4) !important;
+            }
+            .stTextInput input {
+                background: rgba(255, 255, 255, 0.05) !important;
+                border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                border-radius: 12px !important;
+                color: #e6eef9 !important;
+                padding: 12px 16px !important;
+            }
+            .stTextInput input:focus {
+                border-color: #6366f1 !important;
+                box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1) !important;
+            }
+            .stToast {
+                background: rgba(30, 35, 60, 0.95) !important;
+                border: 1px solid rgba(255, 255, 255, 0.1) !important;
+                border-radius: 12px !important;
+                color: #e6eef9 !important;
+            }
         </style>
         """, unsafe_allow_html=True)
 
 load_css()
-
-# ============================================
-# REDIRECT TO MAIN APP IF LOGGED IN
-# ============================================
-
-if st.session_state.logged_in and st.session_state.token:
-    st.switch_page("pages/main.py")
-    st.stop()
 
 # ============================================
 # PINECONE SETUP
@@ -185,11 +227,11 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(INDEX_NAME)
 
 # ============================================
-# AUTH FUNCTIONS (Pinecone Only)
+# AUTH FUNCTIONS
 # ============================================
 
 def embed_text(text: str) -> list:
-    """Simple embedding function (use Gemini in production)"""
+    """Simple embedding function"""
     import random
     random.seed(hash(text) % 2**32)
     return [random.uniform(0.01, 0.02) for _ in range(768)]
@@ -240,7 +282,7 @@ def create_user(email: str, password: str) -> dict:
                 "type": "user_auth",
                 "email": email,
                 "password_hash": password_hash,
-                "created_at": datetime.utcnow().isoformat()
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
         }],
         namespace="users"
@@ -266,16 +308,12 @@ def generate_jwt(user_id: str, email: str) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
-        "exp": datetime.utcnow() + timedelta(days=7)
+        "exp": datetime.now(timezone.utc) + timedelta(days=7)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm='HS256')
 
-# ============================================
-# JAVASCRIPT TO SET TOKEN IN LOCAL STORAGE
-# ============================================
-
-def set_token_in_storage(token):
-    """Inject JavaScript to save token to localStorage"""
+def save_token_to_storage(token):
+    """Save token to localStorage via JavaScript"""
     js_code = f"""
     <script>
         localStorage.setItem('auth_token', '{token}');
@@ -338,18 +376,18 @@ with tab1:
                     if user:
                         token = generate_jwt(user['user_id'], user['email'])
                         
-                        # Store token in session state
                         st.session_state.token = token
                         st.session_state.user_id = user['user_id']
                         st.session_state.user_email = user['email']
                         st.session_state.logged_in = True
+                        st.session_state.auth_checked = True
                         
-                        # Save token to localStorage
-                        set_token_in_storage(token)
+                        save_token_to_storage(token)
                         
                         st.toast(f"✅ Welcome back, {user['email']}!")
                         time.sleep(0.5)
-                        st.rerun()
+                        st.switch_page("pages/main.py")
+                        st.stop()
                     else:
                         st.toast("❌ Invalid email or password.")
 
@@ -391,17 +429,17 @@ with tab2:
                     if user:
                         token = generate_jwt(user['user_id'], user['email'])
                         
-                        # Store token in session state
                         st.session_state.token = token
                         st.session_state.user_id = user['user_id']
                         st.session_state.user_email = user['email']
                         st.session_state.logged_in = True
+                        st.session_state.auth_checked = True
                         
-                        # Save token to localStorage
-                        set_token_in_storage(token)
+                        save_token_to_storage(token)
                         
                         st.toast(f"✅ Account created! Welcome, {user['email']}!")
                         time.sleep(0.5)
-                        st.rerun()
+                        st.switch_page("pages/main.py")
+                        st.stop()
                     else:
                         st.toast("❌ User with this email already exists.")
