@@ -33,9 +33,14 @@ from Progress import (
 # -----------------------------
 # CHECK LOGIN STATUS
 # -----------------------------
-if not st.session_state.get('logged_in', False) or not st.session_state.get('user_id'):
-    st.switch_page("pages/Authentication_Page.py")
+from auth import check_authentication, init_session_state
+
+init_session_state()
+
+if not check_authentication():
+    st.switch_page("app.py")
     st.stop()
+
 
 # -----------------------------
 # LOAD CSS FROM EXTERNAL FILE

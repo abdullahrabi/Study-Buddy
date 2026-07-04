@@ -1,10 +1,10 @@
-# auth.py - Authentication Module with Query Params Only (Simplest & Most Reliable)
+# auth.py
 import streamlit as st
 import os
 import requests
 import json
-import base64
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -13,7 +13,14 @@ load_dotenv()
 # CONFIGURATION
 # ============================================
 
+# ✅ Remove /api from the URL - your Flask routes don't have /api prefix
 API_URL = os.getenv("API_URL")
+
+# Remove trailing slash if present
+if API_URL.endswith('/'):
+    API_URL = API_URL[:-1]
+
+print(f"🔗 Using API_URL: {API_URL}")
 
 # ============================================
 # SESSION STATE INITIALIZATION
@@ -29,6 +36,8 @@ def init_session_state():
         st.session_state.user_email = None
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
+    if 'session_restored' not in st.session_state:
+        st.session_state.session_restored = False
 
 # ============================================
 # API CALL HELPERS
@@ -43,8 +52,14 @@ def get_headers():
 
 def api_call(method: str, endpoint: str, data: dict = None, params: dict = None):
     """Generic API call function"""
+    # ✅ Remove leading slash from endpoint to avoid double slash
+    if endpoint.startswith('/'):
+        endpoint = endpoint[1:]
+    
     url = f"{API_URL}/{endpoint}"
     headers = get_headers()
+    
+    print(f"📡 Calling: {method} {url}")
     
     try:
         if method == 'GET':
@@ -54,11 +69,18 @@ def api_call(method: str, endpoint: str, data: dict = None, params: dict = None)
         else:
             return {'error': 'Invalid method'}
         
+        print(f"📡 Response Status: {response.status_code}")
+        
         if response.status_code in [200, 201]:
             return response.json()
         else:
-            error_msg = response.json().get('error', 'API request failed')
+            try:
+                error_msg = response.json().get('error', 'API request failed')
+            except:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
             return {'error': error_msg}
+    except requests.exceptions.ConnectionError:
+        return {'error': f"Connection error: Cannot reach {API_URL}"}
     except Exception as e:
         return {'error': str(e)}
 
@@ -87,10 +109,11 @@ def check_authentication():
         st.session_state.token = token
         result = api_call('GET', 'auth/verify')
         
-        if result.get('valid'):
+        if result and result.get('valid'):
             st.session_state.user_id = user_id
             st.session_state.user_email = user_email
             st.session_state.logged_in = True
+            st.session_state.session_restored = True
             return True
         else:
             # Clear invalid query params
@@ -108,6 +131,8 @@ def login_user(email: str, password: str):
     if not email or not password:
         return False, "Email and password are required"
     
+    print(f"🔐 Attempting login for: {email}")
+    
     # Call login API
     result = api_call('POST', 'auth/login', {
         'email': email,
@@ -115,6 +140,7 @@ def login_user(email: str, password: str):
     })
     
     if 'error' in result:
+        print(f"❌ Login error: {result['error']}")
         return False, result['error']
     
     # Get data from response
@@ -131,12 +157,14 @@ def login_user(email: str, password: str):
     st.session_state.user_id = user_id
     st.session_state.user_email = user_email
     st.session_state.logged_in = True
+    st.session_state.session_restored = True
     
     # Save to query_params for persistence across refreshes
     st.query_params['token'] = token
     st.query_params['user_id'] = user_id
     st.query_params['user_email'] = user_email
     
+    print(f"✅ Login successful for: {user_email}")
     return True, "Login successful"
 
 def register_user(email: str, password: str):
@@ -166,6 +194,7 @@ def logout():
     st.session_state.user_id = None
     st.session_state.user_email = None
     st.session_state.logged_in = False
+    st.session_state.session_restored = False
     
     # Clear query params
     st.query_params.clear()
@@ -188,3 +217,12 @@ def get_current_user():
             'email': st.session_state.user_email
         }
     return None
+
+# ✅ Add this function to fix the ImportError
+def setup_cookie_listener():
+    """
+    Setup a listener for cookie messages from JavaScript.
+    This function is kept for compatibility with app.py.
+    In the query-params approach, this does nothing.
+    """
+    pass
