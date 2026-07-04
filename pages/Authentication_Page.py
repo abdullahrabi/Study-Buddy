@@ -1,8 +1,16 @@
 # pages/login.py - Login/Signup Page
 import streamlit as st
 import time
-from auth import login_user, register_user, check_authentication
+from auth import login_user, register_user, check_authentication, init_session_state
 
+
+# INITIALIZE SESSION STATE
+init_session_state()
+
+# CHECK IF ALREADY AUTHENTICATED
+if check_authentication():
+    st.switch_page("pages/Main_Page.py")
+    st.stop()
 # ============================================
 # PAGE CONFIG
 # ============================================
@@ -19,6 +27,7 @@ st.set_page_config(
 
 # Check if already authenticated
 if check_authentication():
+    time.sleep(1)  # Optional: Add a small delay for better UX
     st.switch_page("pages/Main_Page.py")
     st.stop()
 
@@ -174,7 +183,7 @@ with tab1:
                     success, message = login_user(email, password)
                     if success:
                         st.toast(f"✅ Welcome back, {email}!")
-                        time.sleep(0.5)
+                        time.sleep(1)
                         st.switch_page("pages/Main_Page.py")
                         st.stop()
                     else:
@@ -202,7 +211,7 @@ with tab2:
                     success, message = register_user(email, password)
                     if success:
                         st.toast(f"✅ Account created! Welcome, {email}!")
-                        time.sleep(0.5)
+                        time.sleep(1)
                         # Auto-login after registration
                         login_success, login_message = login_user(email, password)
                         if login_success:

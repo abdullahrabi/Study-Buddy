@@ -1,11 +1,11 @@
-# auth.py - Authentication Module with Flask API
+# auth.py - Authentication Module with Query Params Only (Simplest & Most Reliable)
 import streamlit as st
 import os
 import requests
-import time
+import json
+import base64
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-import uuid
 
 load_dotenv()
 
@@ -13,7 +13,7 @@ load_dotenv()
 # CONFIGURATION
 # ============================================
 
-API_URL = os.getenv("API_URL", "http://localhost:5000/api")
+API_URL = os.getenv("API_URL")
 
 # ============================================
 # SESSION STATE INITIALIZATION
@@ -29,13 +29,9 @@ def init_session_state():
         st.session_state.user_email = None
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
-    if 'auth_checked' not in st.session_state:
-        st.session_state.auth_checked = False
-    if 'session_id' not in st.session_state:
-        st.session_state.session_id = None
 
 # ============================================
-# API CALL HELPER FUNCTIONS
+# API CALL HELPERS
 # ============================================
 
 def get_headers():
@@ -52,13 +48,9 @@ def api_call(method: str, endpoint: str, data: dict = None, params: dict = None)
     
     try:
         if method == 'GET':
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers, params=params, timeout=10)
         elif method == 'POST':
-            response = requests.post(url, json=data, headers=headers)
-        elif method == 'PUT':
-            response = requests.put(url, json=data, headers=headers)
-        elif method == 'DELETE':
-            response = requests.delete(url, headers=headers)
+            response = requests.post(url, json=data, headers=headers, timeout=10)
         else:
             return {'error': 'Invalid method'}
         
@@ -67,38 +59,8 @@ def api_call(method: str, endpoint: str, data: dict = None, params: dict = None)
         else:
             error_msg = response.json().get('error', 'API request failed')
             return {'error': error_msg}
-    except requests.exceptions.ConnectionError:
-        return {'error': 'Cannot connect to server. Please make sure the API is running.'}
     except Exception as e:
         return {'error': str(e)}
-
-# ============================================
-# SESSION STORE (Server-Side Persistence)
-# ============================================
-
-@st.cache_resource
-def get_session_store():
-    """
-    A server-side session store that persists across reruns.
-    This is the source of truth for all authenticated sessions.
-    """
-    return {}
-
-def get_or_create_session_id():
-    """
-    Get or create a session ID.
-    """
-    init_session_state()
-    
-    # Check if we already have a session ID
-    if st.session_state.session_id:
-        return st.session_state.session_id
-    
-    # Create a new session ID
-    session_id = uuid.uuid4().hex
-    st.session_state.session_id = session_id
-    
-    return session_id
 
 # ============================================
 # AUTHENTICATION FUNCTIONS
@@ -107,22 +69,32 @@ def get_or_create_session_id():
 def check_authentication():
     """
     Check if user is authenticated.
+    Restores from query_params if session state is empty.
     """
     init_session_state()
     
-    # 1. Check session state first (fastest)
+    # Check session state first
     if st.session_state.logged_in and st.session_state.token:
         return True
     
-    # 2. Check with the API if we have a token
-    if st.session_state.token:
+    # Try to restore from query_params
+    token = st.query_params.get('token')
+    user_id = st.query_params.get('user_id')
+    user_email = st.query_params.get('user_email')
+    
+    if token and user_id and user_email:
+        # Verify token with backend
+        st.session_state.token = token
         result = api_call('GET', 'auth/verify')
+        
         if result.get('valid'):
+            st.session_state.user_id = user_id
+            st.session_state.user_email = user_email
             st.session_state.logged_in = True
-            st.session_state.user_id = result.get('user_id')
-            st.session_state.user_email = result.get('email')
-            st.session_state.auth_checked = True
             return True
+        else:
+            # Clear invalid query params
+            st.query_params.clear()
     
     return False
 
@@ -133,7 +105,6 @@ def login_user(email: str, password: str):
     """
     init_session_state()
     
-    # Validate input
     if not email or not password:
         return False, "Email and password are required"
     
@@ -146,28 +117,25 @@ def login_user(email: str, password: str):
     if 'error' in result:
         return False, result['error']
     
-    # Set session state
+    # Get data from response
     token = result.get('token')
     user_data = result.get('user', {})
+    user_id = user_data.get('user_id')
+    user_email = user_data.get('email')
     
+    if not token or not user_id or not user_email:
+        return False, "Invalid response from server"
+    
+    # Set session state
     st.session_state.token = token
-    st.session_state.user_id = user_data.get('user_id')
-    st.session_state.user_email = user_data.get('email')
+    st.session_state.user_id = user_id
+    st.session_state.user_email = user_email
     st.session_state.logged_in = True
-    st.session_state.auth_checked = True
     
-    # Get or create session ID
-    session_id = get_or_create_session_id()
-    st.session_state.session_id = session_id
-    
-    # Store session data on the server
-    session_store = get_session_store()
-    session_store[session_id] = {
-        'user_id': user_data.get('user_id'),
-        'email': user_data.get('email'),
-        'token': token,
-        'login_time': datetime.now(timezone.utc).isoformat()
-    }
+    # Save to query_params for persistence across refreshes
+    st.query_params['token'] = token
+    st.query_params['user_id'] = user_id
+    st.query_params['user_email'] = user_email
     
     return True, "Login successful"
 
@@ -176,14 +144,12 @@ def register_user(email: str, password: str):
     Register new user via API.
     Returns (success, message)
     """
-    # Validate input
     if not email or not password:
         return False, "Email and password are required"
     
     if len(password) < 8:
         return False, "Password must be at least 8 characters"
     
-    # Call register API
     result = api_call('POST', 'auth/register', {
         'email': email,
         'password': password
@@ -196,22 +162,14 @@ def register_user(email: str, password: str):
 
 def logout():
     """Logout user and clear all session data."""
-    session_id = st.session_state.session_id
-    if session_id:
-        # Remove from server-side session store
-        session_store = get_session_store()
-        if session_id in session_store:
-            del session_store[session_id]
-    
-    # Clear session state
     st.session_state.token = None
     st.session_state.user_id = None
     st.session_state.user_email = None
     st.session_state.logged_in = False
-    st.session_state.auth_checked = False
-    st.session_state.session_id = None
     
-    # Force rerun to reflect changes
+    # Clear query params
+    st.query_params.clear()
+    
     st.rerun()
 
 def require_auth():
@@ -230,8 +188,3 @@ def get_current_user():
             'email': st.session_state.user_email
         }
     return None
-
-def is_authenticated():
-    """Check if user is authenticated without side effects."""
-    init_session_state()
-    return st.session_state.logged_in and st.session_state.token is not None
