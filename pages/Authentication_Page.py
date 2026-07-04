@@ -1,35 +1,7 @@
 # pages/login.py - Login/Signup Page
 import streamlit as st
-import os
 import time
-from datetime import datetime, timezone, timedelta
-from dotenv import load_dotenv
-from auth import login_user, verify_user, init_session_state
-import bcrypt
-import jwt
-import streamlit.components.v1 as components
-import secrets
-
-from auth import (
-    init_session_state, 
-    check_authentication, 
-    verify_user, 
-    create_user, 
-    generate_jwt
-)
-
-load_dotenv()
-
-# ============================================
-# CONFIGURATION
-# ============================================
-
-PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-INDEX_NAME = os.getenv("INDEX_NAME", "studybuddy")
-
-JWT_SECRET = os.getenv("JWT_SECRET")
-if not JWT_SECRET or len(JWT_SECRET) < 32:
-    JWT_SECRET = secrets.token_urlsafe(32)
+from auth import login_user, register_user, check_authentication
 
 # ============================================
 # PAGE CONFIG
@@ -45,12 +17,7 @@ st.set_page_config(
 # INITIALIZE SESSION STATE
 # ============================================
 
-init_session_state()
-
-# ============================================
-# CHECK IF ALREADY AUTHENTICATED
-# ============================================
-
+# Check if already authenticated
 if check_authentication():
     st.switch_page("pages/Main_Page.py")
     st.stop()
@@ -164,10 +131,11 @@ def load_css():
         </style>
         """, unsafe_allow_html=True)
 
+import os
 load_css()
 
 # ============================================
-# HEADER
+# HEADER (Original)
 # ============================================
 
 st.markdown(
@@ -189,19 +157,8 @@ st.markdown(
 
 tab1, tab2 = st.tabs(["🔐 Sign In", "✨ Create Account"])
 
-def save_token_to_localstorage(token):
-    """Save token to localStorage via JavaScript"""
-    js_code = f"""
-    <script>
-        localStorage.setItem('auth_token', '{token}');
-        localStorage.setItem('token_timestamp', Date.now().toString());
-        console.log('Token saved to localStorage');
-    </script>
-    """
-    components.html(js_code, height=0)
-
 # ============================================
-# LOGIN TAB
+# LOGIN TAB (Using Flask API)
 # ============================================
 with tab1:
     with st.form("login_form", clear_on_submit=False):
@@ -214,37 +171,22 @@ with tab1:
                 st.toast("❌ Please fill in all fields.")
             else:
                 with st.spinner("Logging in..."):
-                    user = verify_user(email, password)
-                    if user:
-                        token = generate_jwt(user['user_id'], user['email'])
-                        
-                        # Set session state (PRIMARY storage)
-                        st.session_state.token = token
-                        st.session_state.user_id = user['user_id']
-                        st.session_state.user_email = user['email']
-                        st.session_state.logged_in = True
-                        st.session_state.auth_checked = True
-                        
-                        # Save to localStorage (BACKUP)
-                        save_token_to_localstorage(token)
-                        
-                        # Set token in query params (for refresh recovery)
-                        st.query_params["token"] = token
-                        login_user(user)  # This sets the cookie and session state
-                        st.toast(f"✅ Welcome back, {user['email']}!")
+                    success, message = login_user(email, password)
+                    if success:
+                        st.toast(f"✅ Welcome back, {email}!")
                         time.sleep(0.5)
                         st.switch_page("pages/Main_Page.py")
                         st.stop()
                     else:
-                        st.toast("❌ Invalid email or password.")
+                        st.toast(f"❌ {message}")
 
 # ============================================
-# SIGNUP TAB
+# SIGNUP TAB (Using Flask API)
 # ============================================
 with tab2:
     with st.form("signup_form", clear_on_submit=True):
         email = st.text_input("Email Address", placeholder="you@example.com", key="signup_email")
-        password = st.text_input("Password", type="password", placeholder="At least 6 characters", key="signup_password")
+        password = st.text_input("Password", type="password", placeholder="At least 8 characters", key="signup_password")
         confirm_password = st.text_input("Confirm Password", type="password", placeholder="Confirm your password", key="signup_confirm")
         submitted = st.form_submit_button("Create Account", use_container_width=True)
         
@@ -253,30 +195,21 @@ with tab2:
                 st.toast("❌ Please fill in all fields.")
             elif password != confirm_password:
                 st.toast("❌ Passwords do not match.")
-            elif len(password) < 6:
-                st.toast("❌ Password must be at least 6 characters.")
+            elif len(password) < 8:
+                st.toast("❌ Password must be at least 8 characters.")
             else:
                 with st.spinner("Creating account..."):
-                    user = create_user(email, password)
-                    if user:
-                        token = generate_jwt(user['user_id'], user['email'])
-                        
-                        # Set session state (PRIMARY storage)
-                        st.session_state.token = token
-                        st.session_state.user_id = user['user_id']
-                        st.session_state.user_email = user['email']
-                        st.session_state.logged_in = True
-                        st.session_state.auth_checked = True
-                        
-                        # Save to localStorage (BACKUP)
-                        save_token_to_localstorage(token)
-                        
-                        # Set token in query params (for refresh recovery)
-                        st.query_params["token"] = token
-                        
-                        st.toast(f"✅ Account created! Welcome, {user['email']}!")
+                    success, message = register_user(email, password)
+                    if success:
+                        st.toast(f"✅ Account created! Welcome, {email}!")
                         time.sleep(0.5)
-                        st.switch_page("pages/Main_Page.py")
-                        st.stop()
+                        # Auto-login after registration
+                        login_success, login_message = login_user(email, password)
+                        if login_success:
+                            st.switch_page("pages/Main_Page.py")
+                            st.stop()
+                        else:
+                            st.toast("✅ Account created! Please login.")
+                            st.rerun()
                     else:
-                        st.toast("❌ User with this email already exists.")
+                        st.toast(f"❌ {message}")
