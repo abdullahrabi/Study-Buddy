@@ -1,3 +1,4 @@
+# Progress.py - Progress Tracking Module with Unique Quiz ID Support
 import os
 import json
 import time
@@ -23,7 +24,7 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 
 existing_indexes = [i.name for i in pc.list_indexes()]
 if INDEX_NAME not in existing_indexes:
-    raise ValueError(f"❌ Index '{INDEX_NAME}' does not exist. Please run notes_quiz.py first.")
+    raise ValueError(f"❌ Index '{INDEX_NAME}' does not exist. Please run setup first.")
 
 index = pc.Index(INDEX_NAME)
 
@@ -69,6 +70,19 @@ def get_relative_time(timestamp, timezone_str=None):
         return f"{int(diff / 86400)} days ago"
     return format_timestamp_to_local(timestamp, timezone_str, "%b %d, %Y")
 
+# ============================================
+# USER ID VALIDATION
+# ============================================
+def validate_user_id(user_id: str) -> bool:
+    """Validate user_id format"""
+    if not user_id:
+        return False
+    if user_id in ['default_user', 'Unknown', 'None', '']:
+        return False
+    if not user_id.startswith('user_'):
+        return False
+    return True
+
 # ---------------- EMBEDDING FUNCTION ----------------
 def embed_text(text: str):
     """Simple embedding function for Pinecone queries."""
@@ -76,7 +90,6 @@ def embed_text(text: str):
         if not text or not text.strip():
             return [random.uniform(0.01, 0.02) for _ in range(768)]
         
-        # For progress, we just need a consistent vector for filtering
         # Use a hash-based deterministic vector
         import hashlib
         hash_obj = hashlib.sha256(text.encode())
@@ -108,22 +121,112 @@ def is_duplicate_progress(user_id: str, hash_value: str) -> bool:
 def mark_progress_stored(user_id: str, hash_value: str):
     _progress_cache[get_cache_key(user_id, hash_value)] = time.time()
 
-# ---------------- STORE PROGRESS ----------------
-def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=None) -> bool:
+# ============================================
+# CHECK EXISTING PROGRESS IN PINECONE
+# ============================================
+def check_existing_progress(user_id: str, progress_hash: str, namespace: str = "progress") -> bool:
+    """Check if progress with this hash already exists in Pinecone"""
+    if not validate_user_id(user_id):
+        return False
+    
+    try:
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
+        
+        results = index.query(
+            vector=query_vector,
+            filter={
+                "user_id": {"$eq": user_id},
+                "type": {"$eq": "progress"},
+                "progress_hash": {"$eq": progress_hash}
+            },
+            top_k=1,
+            include_metadata=True,
+            namespace=namespace
+        )
+        
+        return len(getattr(results, "matches", [])) > 0
+    except Exception as e:
+        print(f"[WARNING] Error checking existing progress: {e}")
+        return False
+
+# ============================================
+# GET NEXT QUIZ NUMBER FOR USER
+# ============================================
+def get_next_quiz_number(user_id: str, namespace: str = "progress") -> int:
+    """Get the next quiz number for a user"""
+    if not validate_user_id(user_id):
+        return 1
+    
+    try:
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
+        
+        results = index.query(
+            vector=query_vector,
+            filter={"user_id": {"$eq": user_id}, "type": {"$eq": "progress"}}, 
+            top_k=100, 
+            include_metadata=True,
+            namespace=namespace
+        )
+        
+        max_attempt = 0
+        for match in getattr(results, "matches", []):
+            meta = match.metadata or {}
+            quiz_number = meta.get("quiz_number", 0)
+            if quiz_number > max_attempt:
+                max_attempt = quiz_number
+        
+        return max_attempt + 1
+    except Exception as e:
+        print(f"[WARNING] Error getting next quiz number: {e}")
+        return 1
+
+# ============================================
+# STORE PROGRESS WITH UNIQUE QUIZ ID
+# ============================================
+def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=None, namespace: str = "progress") -> bool:
     """
-    Store quiz progress results with duplicate prevention.
+    Store quiz progress results with unique quiz ID and duplicate prevention.
     """
+    # Validate user_id
+    if not validate_user_id(user_id):
+        print(f"[ERROR] Invalid user_id: {user_id}")
+        return False
+    
     try:
         timestamp = time.time()
+        
+        # Get next quiz number for this user
+        quiz_number = get_next_quiz_number(user_id, namespace)
+        
+        # Create unique quiz ID
+        quiz_id = f"{user_id}_attempt_{quiz_number}"
         
         # Create a stable hash for duplicate detection (remove timestamp)
         progress_copy = progress_data.copy()
         progress_copy.pop('timestamp', None)
         progress_hash = hashlib.md5(json.dumps(progress_copy, sort_keys=True).encode()).hexdigest()
         
-        # Check for duplicate
+        # Check cache first
         if is_duplicate_progress(user_id, progress_hash):
-            print(f"[INFO] Duplicate progress detected for user {user_id}, skipping storage")
+            print(f"[INFO] Duplicate progress detected in cache for user {user_id}, skipping storage")
+            return True
+        
+        # Check Pinecone for existing entry with same hash
+        if check_existing_progress(user_id, progress_hash, namespace):
+            print(f"[INFO] Duplicate progress exists in Pinecone for user {user_id}, skipping storage")
+            mark_progress_stored(user_id, progress_hash)  # Cache it
             return True
         
         mark_progress_stored(user_id, progress_hash)
@@ -142,6 +245,8 @@ def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=No
             "type": "progress",
             "progress_data": progress_json,
             "user_id": user_id,
+            "quiz_id": quiz_id,  # ✅ Unique quiz ID
+            "quiz_number": quiz_number,  # ✅ Attempt number
             "timestamp": timestamp,
             "source": "quiz_result",
             "progress_hash": progress_hash,
@@ -150,67 +255,98 @@ def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=No
         
         emb = embed_text(progress_json)
         vector = {
-            "id": f"{user_id}_progress_{int(timestamp)}_{progress_hash[:8]}",
+            "id": quiz_id,  # ✅ Use quiz_id as the vector ID
             "values": emb,
             "metadata": metadata
         }
         
-        index.upsert(vectors=[vector])
-        print(f"[INFO] Stored progress for user {user_id}")
+        # Store in progress namespace
+        index.upsert(vectors=[vector], namespace=namespace)
+        print(f"[INFO] Stored progress for user {user_id} - Quiz #{quiz_number} (ID: {quiz_id})")
         return True
         
     except Exception as e:
         print(f"[ERROR] store_progress: {e}")
         return False
 
-# ---------------- FETCH PROGRESS ----------------
-def fetch_progress_from_pinecone(user_id: str, user_timezone=None):
+# ============================================
+# FETCH PROGRESS WITH NAMESPACE
+# ============================================
+def fetch_progress_from_pinecone(user_id: str, user_timezone=None, namespace: str = "progress", auto_cleanup: bool = True):
     """
-    Fetch and summarize user progress.
-    
-    Returns:
-        dict: {
-            "user_id": user_id,
-            "progress": [...],  # List of progress entries
+    Fetch and summarize user progress from the progress namespace.
+    """
+    if not validate_user_id(user_id):
+        return {
+            "user_id": user_id, 
+            "progress": [], 
             "summary": {
-                "total_attempts": int,
-                "average_score": float,
-                "average_accuracy": float,
-                "topics_covered": list,
-                "recent_activity": int
+                "total_attempts": 0, 
+                "average_score": 0, 
+                "average_accuracy": 0,
+                "topics_covered": [],
+                "recent_activity": 0
             }
         }
-    """
+    
+    # Auto-cleanup duplicates when fetching
+    if auto_cleanup:
+        try:
+            deleted = cleanup_duplicate_progress(user_id, namespace)
+            if deleted > 0:
+                print(f"[INFO] Auto-cleaned {deleted} duplicate progress entries")
+        except Exception as e:
+            print(f"[WARNING] Auto-cleanup failed: {e}")
+    
     try:
-        # Query for progress entries
-        query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
         
         results = index.query(
             vector=query_vector,
             filter={"user_id": {"$eq": user_id}, "type": {"$eq": "progress"}}, 
             top_k=100, 
-            include_metadata=True
+            include_metadata=True,
+            namespace=namespace
         )
         
         progress_list = []
+        seen_hashes = set()  # Track seen hashes to deduplicate in memory
+        
         for match in getattr(results, "matches", []):
             meta = match.metadata or {}
             try:
                 data = json.loads(meta.get("progress_data", "{}"))
                 if data and isinstance(data, dict):
+                    # Skip duplicates by hash
+                    progress_hash = meta.get("progress_hash", "")
+                    if progress_hash in seen_hashes:
+                        continue
+                    seen_hashes.add(progress_hash)
+                    
                     timestamp = data.get('timestamp', 0)
                     if timestamp:
                         stored_timezone = meta.get('user_timezone', user_timezone)
                         data['local_time'] = format_timestamp_to_local(timestamp, stored_timezone)
                         data['date'] = format_timestamp_to_local(timestamp, stored_timezone, "%Y-%m-%d")
                         data['relative_time'] = get_relative_time(timestamp, stored_timezone)
+                    
+                    # ✅ Add quiz number and ID to the data
+                    data['quiz_number'] = meta.get('quiz_number', 0)
+                    data['quiz_id'] = meta.get('quiz_id', '')
+                    
                     progress_list.append(data)
             except Exception as e:
                 print(f"[WARNING] Error parsing progress data: {e}")
                 continue
         
-        # Sort by timestamp (newest first)
-        progress_list.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        # Sort by quiz number (newest first)
+        progress_list.sort(key=lambda x: x.get('quiz_number', 0), reverse=True)
         
         if not progress_list:
             return {
@@ -272,20 +408,31 @@ def fetch_progress_from_pinecone(user_id: str, user_timezone=None):
             }
         }
 
-# ---------------- CLEANUP DUPLICATE PROGRESS ----------------
-def cleanup_duplicate_progress(user_id: str):
+# ============================================
+# CLEANUP DUPLICATE PROGRESS WITH NAMESPACE
+# ============================================
+def cleanup_duplicate_progress(user_id: str, namespace: str = "progress"):
     """
-    Clean up duplicate progress entries for a user.
-    Keeps only the most recent entry for each unique progress result.
+    Clean up duplicate progress entries for a user from the progress namespace.
     """
+    if not validate_user_id(user_id):
+        return 0
+    
     try:
-        query_vector = [random.uniform(0.01, 0.02) for _ in range(768)]
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
         
         results = index.query(
             vector=query_vector,
             filter={"user_id": {"$eq": user_id}, "type": {"$eq": "progress"}}, 
             top_k=200, 
-            include_metadata=True
+            include_metadata=True,
+            namespace=namespace
         )
         
         # Group by content hash
@@ -326,7 +473,7 @@ def cleanup_duplicate_progress(user_id: str):
             print(f"[INFO] Deleting {len(to_delete)} duplicate progress entries for user {user_id}")
             for i in range(0, len(to_delete), 100):
                 batch = to_delete[i:i+100]
-                index.delete(ids=batch)
+                index.delete(ids=batch, namespace=namespace)
             return len(to_delete)
         
         print(f"[INFO] No duplicate progress entries found for user {user_id}")
@@ -366,8 +513,9 @@ def format_progress_for_display(progress_data: Dict[str, Any]) -> str:
         accuracy = attempt.get('accuracy', 0)
         topic = attempt.get('topic', 'Unknown')
         difficulty = attempt.get('difficulty', 'medium')
+        quiz_number = attempt.get('quiz_number', 0)
         
-        output.append(f"\n{i}. {local_time}")
+        output.append(f"\n{i}. #{quiz_number} - {local_time}")
         output.append(f"   Topic: {topic}")
         output.append(f"   Difficulty: {difficulty.upper()}")
         output.append(f"   Score: {score}/{total} ({accuracy}%)")

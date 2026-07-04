@@ -1,3 +1,4 @@
+# Notes_Quiz_Section.py - Notes & Quiz Module with CAG Support
 import os
 import json
 import time
@@ -91,6 +92,19 @@ def get_relative_time(timestamp, timezone_str=None):
         return f"{int(diff / 86400)} days ago"
     return format_timestamp_to_local(timestamp, timezone_str, "%b %d, %Y")
 
+# ============================================
+# USER ID VALIDATION
+# ============================================
+def validate_user_id(user_id: str) -> bool:
+    """Validate user_id format"""
+    if not user_id:
+        return False
+    if user_id in ['default_user', 'Unknown', 'None', '']:
+        return False
+    if not user_id.startswith('user_'):
+        return False
+    return True
+
 # ---------------- FILE EXTRACTION HELPERS ----------------
 def extract_text_from_pdf(file_path):
     text = ""
@@ -182,14 +196,18 @@ def is_duplicate(user_id: str, item_type: str, hash_value: str) -> bool:
 def mark_stored(user_id: str, item_type: str, hash_value: str):
     _storage_cache[get_cache_key(user_id, item_type, hash_value)] = time.time()
 
-# ---------------- STORE NOTES & QUIZZES ----------------
-def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None, user_timezone=None):
-    vectors = []
-    timestamp = time.time()
-     # Validate user_id format
-    if not user_id or not user_id.startswith('user_'):
+# ============================================
+# STORE NOTES & QUIZZES WITH NAMESPACE
+# ============================================
+def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None, user_timezone=None, namespace: str = "notes"):
+    """Store notes and quizzes with proper validation and namespace"""
+    # Validate user_id format
+    if not validate_user_id(user_id):
         print(f"[ERROR] Invalid user_id format: {user_id}")
         return False
+    
+    vectors = []
+    timestamp = time.time()
     
     try:
         local_time_info = {}
@@ -246,22 +264,113 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None, user_
             })
         
         if vectors:
+            # ✅ Store in the specified namespace (default: "notes")
             for i in range(0, len(vectors), 100):
-                index.upsert(vectors=vectors[i:i+100])
-            print(f"[INFO] Stored {len(vectors)} vectors for user {user_id}")
+                index.upsert(vectors=vectors[i:i+100], namespace=namespace)
+            print(f"[INFO] Stored {len(vectors)} vectors for user {user_id} in namespace '{namespace}'")
             return True
         return False
     except Exception as e:
         print(f"[ERROR] store_notes_and_quizzes: {e}")
         return False
 
-# ==================== TOOLS (SAME AS CHATBOT) ====================
+# ============================================
+# FETCH NOTES FROM PINECONE
+# ============================================
+def fetch_notes_from_pinecone(user_id: str, limit: int = 50, namespace: str = "notes") -> list:
+    """Fetch notes from the notes namespace"""
+    if not validate_user_id(user_id):
+        return []
+    
+    try:
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
+        
+        results = index.query(
+            vector=query_vector,
+            top_k=limit,
+            include_metadata=True,
+            namespace=namespace,
+            filter={
+                "user_id": {"$eq": user_id},
+                "type": {"$eq": "notes"}
+            }
+        )
+        
+        notes = []
+        for match in results.matches:
+            if match.metadata:
+                notes.append({
+                    "id": match.id,
+                    "text": match.metadata.get('text', ''),
+                    "chunk_index": match.metadata.get('chunk_index', 0),
+                    "timestamp": match.metadata.get('timestamp', 0)
+                })
+        
+        notes.sort(key=lambda x: x.get('chunk_index', 0))
+        return notes
+    except Exception as e:
+        print(f"[ERROR] fetch_notes_from_pinecone: {e}")
+        return []
+
+# ============================================
+# FETCH QUIZZES FROM PINECONE
+# ============================================
+def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10, namespace: str = "notes") -> list:
+    """Fetch quizzes from the notes namespace"""
+    if not validate_user_id(user_id):
+        return []
+    
+    try:
+        import hashlib
+        hash_obj = hashlib.sha256(user_id.encode())
+        hash_bytes = hash_obj.digest()
+        query_vector = []
+        for i in range(768):
+            byte_val = hash_bytes[i % len(hash_bytes)]
+            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
+        
+        results = index.query(
+            vector=query_vector,
+            top_k=limit,
+            include_metadata=True,
+            namespace=namespace,
+            filter={
+                "user_id": {"$eq": user_id},
+                "type": {"$eq": "quiz"}
+            }
+        )
+        
+        quizzes = []
+        for match in results.matches:
+            if match.metadata:
+                try:
+                    quiz_data = json.loads(match.metadata.get('quiz_data', '{}'))
+                    quizzes.append({
+                        "id": match.id,
+                        "quiz_data": quiz_data,
+                        "timestamp": match.metadata.get('timestamp', 0),
+                        "source": match.metadata.get('source', 'generated_quiz')
+                    })
+                except:
+                    continue
+        
+        return quizzes
+    except Exception as e:
+        print(f"[ERROR] fetch_quizzes_from_pinecone: {e}")
+        return []
+
+# ==================== TOOLS ====================
 
 @tool
 def search_wikipedia_tool(query: str) -> str:
     """Search Wikipedia for information about a topic."""
     try:
-        # Try using wikipedia library first
         try:
             search_results = wikipedia.search(query)
             if not search_results:
@@ -269,7 +378,6 @@ def search_wikipedia_tool(query: str) -> str:
             page = wikipedia.page(search_results[0])
             return f"📚 Wikipedia: {page.title}\n\n{page.summary[:800]}...\n\n🔗 {page.url}"
         except json.JSONDecodeError:
-            # Fallback: Use direct API request
             url = "https://en.wikipedia.org/w/api.php"
             params = {
                 "action": "query",
@@ -283,7 +391,6 @@ def search_wikipedia_tool(query: str) -> str:
             
             if data.get("query", {}).get("search"):
                 title = data["query"]["search"][0]["title"]
-                # Get the summary
                 params = {
                     "action": "query",
                     "titles": title,
@@ -308,7 +415,6 @@ def search_wikipedia_tool(query: str) -> str:
         return f"No page found for '{query}'"
     except Exception as e:
         print(f"[WARNING] Wikipedia error: {e}")
-        # Last fallback: Try simple API
         try:
             url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query.replace(' ', '_')}"
             response = requests.get(url, timeout=5)
@@ -334,7 +440,6 @@ def web_search_tool(query: str) -> str:
             max_results=5,
         )
         
-        # Format the response nicely
         if response and isinstance(response, dict):
             results = response.get('results', [])
             if results:
@@ -353,14 +458,10 @@ def web_search_tool(query: str) -> str:
 # ==================== RESEARCH AGENT FOR QUIZ GENERATION ====================
 
 def research_topic_for_quiz(topic: str) -> str:
-    """
-    Use the LangChain agent with tools to research a topic for quiz generation.
-    This mirrors how the chatbot works.
-    """
+    """Use the LangChain agent with tools to research a topic for quiz generation."""
     try:
         print(f"[INFO] Researching topic with LangChain agent: {topic}")
         
-        # System prompt for research agent
         system_prompt = """You are a research assistant that gathers comprehensive information about a topic for quiz creation.
         
         Your task:
@@ -376,17 +477,14 @@ def research_topic_for_quiz(topic: str) -> str:
         Include definitions, key concepts, important facts, and any relevant details.
         """
 
-        # Initialize LLM
         llm = ChatGroq(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             temperature=0.3,
             groq_api_key=GROQ_API_KEY
         )
 
-        # Create tools list (using the same tools as chatbot)
         tools = [search_wikipedia_tool, web_search_tool]
 
-        # Create agent
         agent = create_agent(
             model=llm,
             tools=tools,
@@ -394,12 +492,10 @@ def research_topic_for_quiz(topic: str) -> str:
             system_prompt=system_prompt
         )
 
-        # Prepare messages
         messages = [
             ("user", f"Please research this topic thoroughly and provide a comprehensive summary: {topic}")
         ]
         
-        # Stream response with thread_id
         input_state = {"messages": messages}
         
         config = {
@@ -417,13 +513,11 @@ def research_topic_for_quiz(topic: str) -> str:
         ):
             last_msg = chunk["messages"][-1]
             
-            # Debug: Show tool usage
             if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
                 print(f"\n🔧 Research agent using tools:")
                 for tool_call in last_msg.tool_calls:
                     print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
             
-            # Collect response
             if hasattr(last_msg, 'content') and last_msg.content:
                 research_summary = last_msg.content
         
@@ -470,9 +564,12 @@ def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user",
                            store_quiz: bool = True,
                            use_tools: bool = True) -> Dict[str, Any]:
     """
-    Generate a quiz from notes or topic.
-    For topics, uses the LangChain agent with tools for research (same as chatbot).
+    Generate a quiz from notes or topic with namespace support.
     """
+    # Validate user_id
+    if not validate_user_id(user_id):
+        print(f"[ERROR] Invalid user_id: {user_id}")
+        user_id = "default_user"
     
     is_topic = len(notes_text.strip()) < 100 or " " not in notes_text.strip()
     
@@ -480,10 +577,7 @@ def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user",
     if is_topic and use_tools:
         print(f"[INFO] Generating quiz from topic using LangChain agent research: {notes_text}")
         
-        # Use the research agent to get comprehensive information
         research_context = research_topic_for_quiz(notes_text.strip())
-        
-        # Use the research context as notes preview
         notes_preview = research_context[:3000].strip()
         source_label = "topic with AI research"
         tools_used = True
@@ -605,7 +699,8 @@ Output valid JSON in this format:
             store_notes_and_quizzes(
                 user_id=user_id,
                 quiz_data=quiz_data,
-                user_timezone=user_timezone
+                user_timezone=user_timezone,
+                namespace="notes"  # ✅ Store in notes namespace
             )
         
         return quiz_data
@@ -653,21 +748,16 @@ def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
     
     return "\n".join(output)
 
-# ---------------- QUIZ EVALUATION (MODIFIED WITH PROGRESS STORAGE) ----------------
+# ---------------- QUIZ EVALUATION ----------------
 def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezone=None, store_progress=True):
     """
-    Evaluate a quiz attempt and optionally store progress.
-    
-    Args:
-        quiz_json: The quiz data containing questions and answers
-        student_answers: Dictionary of student's answers (question index -> answer)
-        user_id: User identifier for storing progress
-        user_timezone: User's timezone for timestamp formatting
-        store_progress: Whether to store progress in Pinecone
-    
-    Returns:
-        progress_data: Dictionary containing evaluation results
+    Evaluate a quiz attempt and optionally store progress with namespace support.
     """
+    # Validate user_id
+    if user_id and not validate_user_id(user_id):
+        print(f"[WARNING] Invalid user_id: {user_id}, progress will not be stored")
+        user_id = None
+    
     correct = 0
     total = len(quiz_json.get("quiz", []))
     feedback = []
@@ -747,13 +837,13 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
         try:
             print(f"[INFO] Storing progress for user: {user_id}")
             
-            # Import Progress module here to avoid circular imports
             from Progress import store_progress as store_progress_data
             
             success = store_progress_data(
                 user_id=user_id,
                 progress_data=progress_data,
-                user_timezone=user_timezone
+                user_timezone=user_timezone,
+                namespace="progress"  # ✅ Store in progress namespace
             )
             
             if success:
@@ -763,7 +853,6 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
                 
         except ImportError as e:
             print(f"[WARNING] Progress module not found: {e}")
-            # Try direct storage as fallback
             try:
                 store_progress_direct(user_id, progress_data, user_timezone)
             except Exception as e2:
@@ -776,28 +865,29 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
     
     return progress_data
 
-
 # ---------------- DIRECT PROGRESS STORAGE (FALLBACK) ----------------
 def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_timezone=None) -> bool:
     """
-    Direct storage of progress data to Pinecone (fallback if Progress module is not available).
+    Direct storage of progress data to Pinecone with namespace support.
     """
     try:
+        # Validate user_id
+        if not validate_user_id(user_id):
+            print(f"[ERROR] Invalid user_id: {user_id}")
+            return False
+        
         timestamp = time.time()
         
-        # Create a stable hash for duplicate detection
         progress_copy = progress_data.copy()
         progress_copy.pop('timestamp', None)
         progress_hash = hashlib.md5(json.dumps(progress_copy, sort_keys=True).encode()).hexdigest()
         
-        # Check for duplicate in cache
         if is_duplicate(user_id, "progress", progress_hash):
             print(f"[INFO] Duplicate progress detected for user {user_id}, skipping storage")
             return True
         
         mark_stored(user_id, "progress", progress_hash)
         
-        # Prepare local time info
         local_time_info = {}
         if user_timezone and TIMEZONE_AVAILABLE:
             local_time_info = {
@@ -817,10 +907,8 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_time
             **local_time_info
         }
         
-        # Generate embedding
         emb = embed_text(progress_json)
         
-        # Ensure embedding has correct dimensions
         if len(emb) != 768:
             print(f"[WARNING] Embedding length {len(emb)} != 768, adjusting")
             if len(emb) < 768:
@@ -828,16 +916,15 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_time
             else:
                 emb = emb[:768]
         
-        # Create vector
         vector = {
             "id": f"{user_id}_progress_{int(timestamp)}_{progress_hash[:8]}",
             "values": emb,
             "metadata": metadata
         }
         
-        # Upsert to Pinecone
-        index.upsert(vectors=[vector])
-        print(f"[INFO] Direct storage: Progress vector stored for user {user_id}")
+        # ✅ Store in progress namespace
+        index.upsert(vectors=[vector], namespace="progress")
+        print(f"[INFO] Direct storage: Progress vector stored for user {user_id} in namespace 'progress'")
         return True
         
     except Exception as e:
@@ -846,10 +933,9 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_time
         traceback.print_exc()
         return False
 
-
-# ---------------- STORE PROGRESS (WRAPPER FOR BACKWARD COMPATIBILITY) ----------------
+# ---------------- STORE PROGRESS (WRAPPER) ----------------
 def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=None) -> bool:
     """
-    Wrapper function to store progress. This function is called from the Progress module.
+    Wrapper function to store progress with namespace support.
     """
     return store_progress_direct(user_id, progress_data, user_timezone)
