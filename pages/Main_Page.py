@@ -244,9 +244,9 @@ def add_message_to_current_session(role, message):
 # Header Section
 # ============================================
 # Get user info from either st.user or session state
-user_email = st.user.email if hasattr(st, 'user') and st.user else st.session_state.get('user_email', 'Unknown')
-user_id = st.user.user_id if hasattr(st, 'user') and st.user else st.session_state.get('user_id', 'Unknown')
-
+# Use only session_state for user_id
+user_id = st.session_state.get('user_id', 'Unknown')
+user_email = st.session_state.get('user_email', 'Unknown')
 st.markdown(
     f"""
     <div class="header-card">

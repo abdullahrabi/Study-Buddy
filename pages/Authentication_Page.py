@@ -1,16 +1,9 @@
 # pages/login.py - Login/Signup Page
 import streamlit as st
 import time
+import os  # Added missing import
 from auth import login_user, register_user, check_authentication, init_session_state
 
-
-# INITIALIZE SESSION STATE
-init_session_state()
-
-# CHECK IF ALREADY AUTHENTICATED
-if check_authentication():
-    st.switch_page("pages/Main_Page.py")
-    st.stop()
 # ============================================
 # PAGE CONFIG
 # ============================================
@@ -25,14 +18,16 @@ st.set_page_config(
 # INITIALIZE SESSION STATE
 # ============================================
 
-# Check if already authenticated
+init_session_state()  # Only call once
+
+# CHECK IF ALREADY AUTHENTICATED
 if check_authentication():
     time.sleep(1)  # Optional: Add a small delay for better UX
     st.switch_page("pages/Main_Page.py")
     st.stop()
 
 # ============================================
-# LOAD CSS (Keep your existing CSS)
+# LOAD CSS
 # ============================================
 
 def load_css():
@@ -140,11 +135,10 @@ def load_css():
         </style>
         """, unsafe_allow_html=True)
 
-import os
 load_css()
 
 # ============================================
-# HEADER (Original)
+# HEADER
 # ============================================
 
 st.markdown(
@@ -164,11 +158,16 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# ============================================
+# TABS
+# ============================================
+
 tab1, tab2 = st.tabs(["🔐 Sign In", "✨ Create Account"])
 
 # ============================================
-# LOGIN TAB (Using Flask API)
+# LOGIN TAB
 # ============================================
+
 with tab1:
     with st.form("login_form", clear_on_submit=False):
         email = st.text_input("Email Address", placeholder="you@example.com", key="login_email")
@@ -190,8 +189,9 @@ with tab1:
                         st.toast(f"❌ {message}")
 
 # ============================================
-# SIGNUP TAB (Using Flask API)
+# SIGNUP TAB
 # ============================================
+
 with tab2:
     with st.form("signup_form", clear_on_submit=True):
         email = st.text_input("Email Address", placeholder="you@example.com", key="signup_email")

@@ -552,19 +552,7 @@ User question: {user_input}"""
             contexts_used = get_last_contexts()
             context_texts = [c.get('text', '') for c in contexts_used if c.get('text')]
             
-            try:
-                # Store in Pinecone
-                store_conversation(
-                    user_id=user_id or "default_user",
-                    question=user_input,
-                    answer=collected_response,
-                    contexts=context_texts
-                )
-                print(f"\n📊 Saved to Pinecone")
-                
-            except Exception as e:
-                print(f"⚠️ Pinecone save error: {e}")
-
+           
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
         import traceback

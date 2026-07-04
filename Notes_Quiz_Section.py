@@ -186,6 +186,10 @@ def mark_stored(user_id: str, item_type: str, hash_value: str):
 def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None, user_timezone=None):
     vectors = []
     timestamp = time.time()
+     # Validate user_id format
+    if not user_id or not user_id.startswith('user_'):
+        print(f"[ERROR] Invalid user_id format: {user_id}")
+        return False
     
     try:
         local_time_info = {}
