@@ -34,7 +34,7 @@ from Progress import (
 # CHECK LOGIN STATUS
 # -----------------------------
 if not st.session_state.get('logged_in', False) or not st.session_state.get('user_id'):
-    st.switch_page("Authentication_Page.py")
+    st.switch_page("pages/Authentication_Page.py")
     st.stop()
 
 # -----------------------------
