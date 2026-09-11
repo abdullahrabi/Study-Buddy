@@ -1,20 +1,16 @@
-# app.py - Main Entry Point with Token Recovery
+# app.py - Main Entry Point
 import streamlit as st
-import time
-from auth import check_authentication, init_session_state, setup_cookie_listener
+from auth import check_authentication, init_session_state
 
-# Initialize session state first
 init_session_state()
-
-
 
 st.set_page_config(
     page_title="StudyBuddy",
     page_icon="🤖",
     layout="centered"
 )
-setup_cookie_listener()  # ✅ Now this exists
-# Check authentication with query params
+
+# ✅ Check authentication from browser cookies
 if check_authentication():
     st.switch_page("pages/Main_Page.py")
 else:

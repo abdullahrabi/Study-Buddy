@@ -478,7 +478,7 @@ def research_topic_for_quiz(topic: str) -> str:
         """
 
         llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="openai/gpt-oss-120b",
             temperature=0.3,
             groq_api_key=GROQ_API_KEY
         )
@@ -660,7 +660,7 @@ Output valid JSON in this format:
             return create_fallback_quiz(notes_text[:100], difficulty, config)
         
         llm = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="openai/gpt-oss-120b",
             temperature=0.7,
             groq_api_key=GROQ_API_KEY
         )

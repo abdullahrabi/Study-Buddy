@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from pinecone import Pinecone, ServerlessSpec
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import docx2txt
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Annotated
@@ -777,7 +777,7 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
             system_prompt += "\n\nUse this context to provide more coherent and continuous responses."
 
         llm = ChatGroq(
-            model="qwen/qwen3.6-27b",
+            model="openai/gpt-oss-20b",
             temperature=0.3,
             groq_api_key=GROQ_API_KEY
         )
@@ -858,7 +858,7 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
             model=llm,
             tools=tools,
             checkpointer=MemorySaver(),
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
         )
 
         messages = []
@@ -942,7 +942,7 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
             set_last_contexts(note_contexts + quiz_contexts + chat_contexts)
             
             fallback_llm = ChatGroq(
-                model="qwen/qwen3.6-27b",
+                model="openai/gpt-oss-20b",
                 temperature=0.5,
                 groq_api_key=GROQ_API_KEY
             )

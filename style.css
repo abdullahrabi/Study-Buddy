@@ -27,7 +27,8 @@ section[data-testid="stSidebar"] * {
 }
 
 /* ============================================
-   CLEAN PROFESSIONAL TABS - COMPLETE VERSION
+   TABS - REACT ARIA VERSION (matches your DOM)
+   Target: div[data-testid="stTab"][role="tab"]
    ============================================ */
 
 /* 1. SUBTLE TAB CONTAINER */
@@ -42,7 +43,7 @@ section[data-testid="stSidebar"] * {
 }
 
 /* 2. CLEAN TAB LIST */
-.stTabs [data-baseweb="tab-list"] {
+.stTabs [role="tablist"] {
     display: flex !important;
     gap: 2px !important;
     width: 100% !important;
@@ -53,8 +54,8 @@ section[data-testid="stSidebar"] * {
     border: 1px solid rgba(255, 255, 255, 0.08) !important;
 }
 
-/* 3. MINIMAL INDIVIDUAL TAB */
-.stTabs [data-baseweb="tab"] {
+/* 3. INDIVIDUAL TAB (React Aria) */
+.stTabs [data-testid="stTab"] {
     flex: 1 !important;
     text-align: center !important;
     padding: 10px 10px !important;
@@ -64,119 +65,109 @@ section[data-testid="stSidebar"] * {
     border: 1px solid transparent !important;
     color: #9aa3bf !important;
     font-weight: 600 !important;
-    font-size: 26px !important; 
     transition: all 0.25s ease !important;
     display: flex !important;
     flex-direction: column !important;
     align-items: center !important;
     justify-content: center !important;
     gap: 8px !important;
-    min-height: 50px !important; /* Increased for big icons */
+    min-height: 50px !important;
     cursor: pointer !important;
-    line-height: 1.2 !important; /* Better text spacing */
+    line-height: 1.2 !important;
 }
 
-/* NUCLEAR FONT SIZE OVERRIDE - Added to fix 14px issue */
-.stTabs [data-baseweb="tab"] *,
-.stTabs [data-baseweb="tab"] > div > div,
-.stTabs [data-baseweb="tab"] > div > div > div,
-.stTabs [data-baseweb="tab"] span:not([role="img"]) {
-    font-size: 26px !important !important; /* Double !important */
+/* 4. TAB LABEL TEXT - THE ACTUAL FIX */
+.stTabs [data-testid="stTab"] [data-testid="stMarkdownContainer"] p,
+.stTabs [data-testid="stTab"] p {
+    font-size: 26px !important;
     font-weight: 600 !important;
     color: inherit !important;
+    margin: 0 !important;
+    line-height: 1.2 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
 }
 
-/* Override any inline font-size from Streamlit */
-.stTabs [data-baseweb="tab"][style*="font-size"],
-.stTabs [data-baseweb="tab"] *[style*="font-size"] {
-    font-size: 26px !important !important !important; /* Triple !important */
-}
-
-/* 4. SUBTLE HOVER */
-.stTabs [data-baseweb="tab"]:hover:not([aria-selected="true"]) {
+/* 5. SUBTLE HOVER */
+.stTabs [data-testid="stTab"]:hover:not([aria-selected="true"]):not([data-selected="true"]) {
     background: rgba(255, 255, 255, 0.05) !important;
     color: #d6e0f5 !important;
 }
 
-/* 5. ACTIVE TAB (Clean Blue Selection) */
-.stTabs [data-baseweb="tab"][aria-selected="true"] {
+/* 6. ACTIVE TAB */
+.stTabs [data-testid="stTab"][aria-selected="true"],
+.stTabs [data-testid="stTab"][data-selected="true"] {
     background: rgba(79, 222, 216, 0.15) !important;
     border: 1px solid rgba(79, 222, 216, 0.25) !important;
     color: white !important;
     font-weight: 600 !important;
-    font-size: 26px !important !important; /* Double !important */
 }
 
-/* Active tab text override */
-.stTabs [data-baseweb="tab"][aria-selected="true"] *,
-.stTabs [data-baseweb="tab"][aria-selected="true"] > div > div {
-    font-size: 26px !important !important;
+.stTabs [data-testid="stTab"][aria-selected="true"] [data-testid="stMarkdownContainer"] p,
+.stTabs [data-testid="stTab"][aria-selected="true"] p,
+.stTabs [data-testid="stTab"][data-selected="true"] p {
     color: white !important;
+    font-size: 26px !important;
 }
 
-/* 6. REMOVE ALL GLOW/ANIMATION EFFECTS */
-.stTabs [data-baseweb="tab"][aria-selected="true"]::before,
-.stTabs [data-baseweb="tab"][aria-selected="true"]::after {
+/* 7. REMOVE GLOW PSEUDO-ELEMENTS */
+.stTabs [data-testid="stTab"][aria-selected="true"]::before,
+.stTabs [data-testid="stTab"][aria-selected="true"]::after {
     display: none !important;
 }
 
-/* 7. BIG ICONS - Increased size */
-.stTabs [data-baseweb="tab"] img {
-    width: 26px !important; /* Increased from 32px */
-    height: 26px !important; /* Increased from 32px */
+/* 8. TAB ICONS */
+.stTabs [data-testid="stTab"] img {
+    width: 26px !important;
+    height: 26px !important;
     min-width: 26px !important;
     min-height: 26px !important;
     object-fit: contain !important;
-    margin: 0.2rem !important;
+    margin: 0 !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
     transition: all 0.25s ease !important;
 }
 
-/* Override Streamlit's inline icon sizing */
-.stTabs [data-baseweb="tab"] img[style*="width"],
-.stTabs [data-baseweb="tab"] img[style*="height"] {
-    width: 28px !important !important;
-    height: 28px !important !important;
-}
-
-/* 8. ACTIVE ICON (Subtle Change) */
-.stTabs [data-baseweb="tab"][aria-selected="true"] img {
-    border-color: rgba(79, 222, 216, 0.3) !important;
+/* 9. ACTIVE ICON */
+.stTabs [data-testid="stTab"][aria-selected="true"] img,
+.stTabs [data-testid="stTab"][data-selected="true"] img {
     transform: scale(1.05) !important;
 }
 
-/* 9. EMOJI FALLBACK - Bigger to match icons */
-.stTabs [data-baseweb="tab"] span[role="img"] {
-    font-size: 32px !important; /* Increased */
+/* 10. EMOJI FALLBACK */
+.stTabs [data-testid="stTab"] span[role="img"] {
+    font-size: 32px !important;
     opacity: 0.9 !important;
 }
 
-.stTabs [data-baseweb="tab"][aria-selected="true"] span[role="img"] {
+.stTabs [data-testid="stTab"][aria-selected="true"] span[role="img"],
+.stTabs [data-testid="stTab"][data-selected="true"] span[role="img"] {
     opacity: 1 !important;
     transform: scale(1.05) !important;
 }
 
-/* 10. REMOVE DEFAULT HIGHLIGHT */
-.stTabs [data-baseweb="tab-highlight"] {
+/* 11. HIDE REACT ARIA SELECTION INDICATOR (the underline bar) */
+.stTabs .react-aria-SelectionIndicator {
     display: none !important;
 }
 
-/* 11. TAB CONTENT AREA - Fixed typo */
-div[data-baseweb="tab-panel"] {
-    padding: 40px 0 10px 0 !important; /* Fixed: was "40px 10 10px 0" */
+/* 12. TAB CONTENT AREA */
+div[data-testid="stTabPanel"],
+[role="tabpanel"] {
+    padding: 40px 0 10px 0 !important;
 }
 
-/* 12. FOCUS STATES FOR ACCESSIBILITY */
-.stTabs [data-baseweb="tab"]:focus-visible {
+/* 13. FOCUS STATES */
+.stTabs [data-testid="stTab"]:focus-visible {
     outline: 2px solid rgba(79, 222, 216, 0.4) !important;
     outline-offset: 2px !important;
 }
 
-/* 13. EXTRA OVERRIDE FOR STUBBORN STREAMLIT STYLES */
-div[data-testid="stTabs"] [data-baseweb="tab"],
-div[data-testid="stTabs"] [data-baseweb="tab"] * {
-    font-size: 18px !important;
-}
-
+/* ============================================
+   GLOBAL STYLES
+   ============================================ */
 
 html, body, [data-testid="stAppViewContainer"] {
     background: linear-gradient(180deg, var(--bg-1), var(--bg-2)) !important;
@@ -189,14 +180,13 @@ div[data-testid="stVerticalBlock"] {
     padding:0 !important;
 }
 
-    div[data-testid="stToast"] {
-        background-color: rgba(79, 222, 216, 0.4) !important; /* Changes background to blue */
-    }
-    div[data-testid="stToast"] p {
-        color: #d4dcec !important;            /* Forces text inside to be white */
-    }
-    
+div[data-testid="stToast"] {
+    background-color: rgba(79, 222, 216, 0.4) !important;
+}
 
+div[data-testid="stToast"] p {
+    color: #d4dcec !important;
+}
 
 .header-card {
     max-width:1100px;
@@ -586,16 +576,16 @@ div[data-testid="stVerticalBlock"] {
 /* Modern Submit Button - SMALLER SIZE */
 .modern-submit-btn {
     width: 100%;
-    padding: 14px !important;  /* Reduced from 18px */
+    padding: 14px !important;
     border-radius: 14px;
     background: linear-gradient(90deg, #8a7bff, #4fded8);
     color: white;
     font-weight: bold;
-    font-size: 15px !important;  /* Reduced from 17px */
+    font-size: 15px !important;
     border: none;
     cursor: pointer;
     transition: all 0.3s;
-    margin-top: 20px;  /* Reduced from 25px */
+    margin-top: 20px;
     box-shadow: 0 10px 30px rgba(138, 123, 255, 0.3);
     letter-spacing: 0.5px;
     height: auto !important;
@@ -619,13 +609,13 @@ div[data-testid="stVerticalBlock"] {
 /* Modern Navigation Buttons - SMALLER SIZE */
 .nav-btn-container {
     display: flex;
-    gap: 10px;  /* Reduced from 12px */
-    margin-top: 15px;  /* Reduced from 20px */
+    gap: 10px;
+    margin-top: 15px;
 }
 
 .nav-btn {
     flex: 1;
-    padding: 12px !important;  /* Reduced from 14px */
+    padding: 12px !important;
     border-radius: 12px;
     background: rgba(255,255,255,0.05);
     border: 2px solid rgba(255,255,255,0.1);
@@ -634,7 +624,7 @@ div[data-testid="stVerticalBlock"] {
     cursor: pointer;
     transition: all 0.3s;
     text-align: center;
-    font-size: 14px !important;  /* Added font size control */
+    font-size: 14px !important;
     height: auto !important;
     min-height: 0 !important;
 }
@@ -654,7 +644,7 @@ div[data-testid="stVerticalBlock"] {
 
 .nav-btn-primary:hover {
     background: linear-gradient(90deg, #7a6bff, #3fced8);
-    box-shadow: 0 8px 20px rgba(138, 123, 255, 0.3);  /* Reduced shadow */
+    box-shadow: 0 8px 20px rgba(138, 123, 255, 0.3);
 }
 
 /* Quiz progress indicator */
@@ -700,7 +690,6 @@ div[data-testid="stVerticalBlock"] {
     transition: all 0.3s;
 }
 
-/* Progress dot colors - Beautiful unified scheme */
 .progress-dot.active {
     background: linear-gradient(135deg, #8a7bff, #b366ff) !important;
     box-shadow: 0 0 10px rgba(138, 123, 255, 0.8) !important;
@@ -902,8 +891,8 @@ div[data-testid="stButton"] > button[kind="secondary"] {
 }
 .metric-card img{
     height:70px;
-    width:70px,
-    object-fit:contain;
+    width:70px;
+    object-fit: contain;
 }
 .metric-label {
     font-size: 14px;
@@ -957,7 +946,7 @@ div[data-testid="stButton"] > button[kind="secondary"] {
     flex-direction: row;
     align-items: center;
     justify-content: center;
-    gap: 2px !important;  /* REDUCED from 5px to 2px */
+    gap: 2px !important;
     padding: 10px;
     margin: 10px 0;
     text-align: center;
@@ -980,7 +969,7 @@ div[data-testid="stButton"] > button[kind="secondary"] {
     font-size: 22px !important;  
     font-weight: 600 !important;
     margin-left: 0 !important;
-    padding-left: 2px !important;  /* REDUCED from 5px to 2px */
+    padding-left: 2px !important;
     display: inline-flex !important;
     align-items: center !important;
 }
@@ -994,7 +983,7 @@ div[data-testid="stButton"] > button[kind="secondary"] {
     display: none !important;
 }
 
-/* NEW: Button Gradient Styles for Notes & Quiz and Progress Sections */
+/* Button Gradient Styles for Notes & Quiz and Progress Sections */
 div[data-testid="stButton"] > button[kind="primary"] {
     background: linear-gradient(90deg, #8a7bff, #4fded8) !important;
     font-weight: bold !important;
@@ -1054,7 +1043,7 @@ div[data-testid="stButton"] > button[kind="secondary"]:hover {
     padding: 0 !important;
 }
 
-/* NEW: Circle progress bar that behaves like progress line - FIXED to use consistent gradient */
+/* Circle progress bar that behaves like progress line */
 .circle-progress-line {
     position: relative;
     width: 100px;
@@ -1125,11 +1114,11 @@ div[data-testid="stButton"] > button[kind="secondary"]:hover {
     border-radius: 10px;
     z-index: -1;
 }
+
 /* ============================================
-   BIG CALENDAR ICON FIX - FINAL SOLUTION
+   BIG CALENDAR ICON FIX
    ============================================ */
 
-/* Target ALL images with calendar-icon-class in expanders */
 div[data-testid="stExpander"] img[alt="calendar-icon-class"] {
     width: 32px !important;
     height: 32px !important;
@@ -1143,9 +1132,6 @@ div[data-testid="stExpander"] img[alt="calendar-icon-class"] {
     transition: all 0.3s ease !important;
 }
 
-
-
-/* Target the specific structure of expander headers */
 div[data-testid="stExpander"] > div:first-child > div:first-child img[alt="calendar-icon-class"],
 div[data-testid="stExpander"]Details img[alt="calendar-icon-class"],
 .stExpander img[alt="calendar-icon-class"] {
@@ -1153,17 +1139,15 @@ div[data-testid="stExpander"]Details img[alt="calendar-icon-class"],
     height: 40px !important;
 }
 
-/* Nuclear option - target any image with calendar-icon-class anywhere */
 img[alt="calendar-icon-class"] {
     width: 40px !important;
     height: 40px !important;
 }
 
 /* ============================================
-   BIG QUIZ ICON FIX - FINAL SOLUTION
+   BIG QUIZ ICON FIX
    ============================================ */
 
-/* Target ALL images with quiz-icon-class in expanders */
 div[data-testid="stExpander"] img[alt="quiz-icon-class"] {
     width: 62px !important;
     height: 62px !important;
@@ -1177,9 +1161,6 @@ div[data-testid="stExpander"] img[alt="quiz-icon-class"] {
     transition: all 0.3s ease !important;
 }
 
-
-
-/* Target the specific structure of expander headers */
 div[data-testid="stExpander"] > div:first-child > div:first-child img[alt="quiz-icon-class"],
 div[data-testid="stExpander"]Details img[alt="quiz-icon-class"],
 .stExpander img[alt="quiz-icon-class"] {
@@ -1187,7 +1168,6 @@ div[data-testid="stExpander"]Details img[alt="quiz-icon-class"],
     height: 60px !important;
 }
 
-/* Nuclear option - target any image with quiz-icon-class anywhere */
 img[alt="quiz-icon-class"] {
     width: 60px !important;
     height: 60px !important;
@@ -1275,15 +1255,15 @@ div[data-testid="stButton"].selected::after > button {
    FIX: SMALLER NAVIGATION BUTTONS
    ============================================ */
 div[data-testid="stButton"] > button[kind="secondary"] {
-    padding: 10px 16px !important;  /* Smaller padding */
-    font-size: 14px !important;     /* Smaller font */
+    padding: 10px 16px !important;
+    font-size: 14px !important;
     height: auto !important;
     min-height: 0 !important;
 }
 
 div[data-testid="stButton"] > button[kind="primary"] {
-    padding: 10px 16px !important;  /* Smaller padding */
-    font-size: 14px !important;     /* Smaller font */
+    padding: 10px 16px !important;
+    font-size: 14px !important;
     height: auto !important;
     min-height: 0 !important;
 }
@@ -1417,7 +1397,7 @@ div[data-testid="stButton"] > button[kind="primary"] {
     font-size: 16px !important;
 }
 
-/* More specific - targets only images with this alt text */
+/* Search icon */
 img[alt="search_icon-class"] {
     width: 35px !important;
     height: 35px !important;
@@ -1431,8 +1411,7 @@ img[alt="search_icon-class"] {
     margin-top: 5px !important;
 }
 
-
-/* More specific - targets only images with this alt text */
+/* Bin icon */
 img[alt="bin_icon-class"] {
     width: 35px !important;
     height: 35px !important;
@@ -1445,7 +1424,3 @@ img[alt="bin_icon-class"] {
     object-fit: contain !important;
     margin-bottom: 5px !important;
 }
-
-
-
-
