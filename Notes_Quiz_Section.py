@@ -131,54 +131,113 @@ def extract_text(file_path):
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
-# ---------------- CHUNKING & EMBEDDINGS ----------------
-def chunk_text(text: str, max_chars: int = 800) -> List[str]:
+# ============================================
+# CHUNKING & EMBEDDINGS — FIXED
+# ============================================
+
+def chunk_text(
+    text: str,
+    max_chars: int = 800,
+    overlap_sentences: int = 1,
+) -> List[str]:
+    """
+    Paragraph-aware chunking with sentence overlap.
+
+    FIX 1: Paragraph-first splitting preserves structured content
+           (definitions, lists, formulas).
+    FIX 2: Overlap between chunks prevents losing information that
+           spans a boundary.
+    """
     text = text.strip()
     if not text:
         return []
-    sentences = re.split(r'(?<=[.!?])\s+', text)
-    chunks = []
+
+    # Split by paragraphs first to preserve structure
+    paragraphs = re.split(r'\n\s*\n', text)
+
+    chunks: List[str] = []
     current_chunk = ""
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) + 1 <= max_chars:
-            current_chunk += (" " + sentence) if current_chunk else sentence
+    current_sentences: List[str] = []
+
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+
+        # If a paragraph alone exceeds max_chars, split it by sentences
+        if len(para) > max_chars:
+            sentences = re.split(r'(?<=[.!?])\s+', para)
         else:
-            if current_chunk:
-                chunks.append(current_chunk)
-            current_chunk = sentence
+            sentences = [para]
+
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+
+            if len(current_chunk) + len(sentence) + 1 <= max_chars:
+                current_chunk += (" " + sentence) if current_chunk else sentence
+                current_sentences.append(sentence)
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+
+                # FIX: carry over last N sentences as overlap
+                if overlap_sentences > 0 and len(current_sentences) > 0:
+                    overlap = current_sentences[-overlap_sentences:]
+                else:
+                    overlap = []
+
+                current_chunk = " ".join(overlap + [sentence]) if overlap else sentence
+                current_sentences = overlap + [sentence]
+
     if current_chunk:
         chunks.append(current_chunk)
+
     return chunks
 
-def embed_text(text: str):
-    try:
-        if not text or not text.strip():
-            return [random.uniform(0.01, 0.02) for _ in range(768)]
-        
-        text = text.strip()[:10000]
-        result = client.models.embed_content(
-            model="gemini-embedding-2",
-            contents=[text],
-            config=types.EmbedContentConfig(output_dimensionality=768)
-        )
-        
-        emb = None
-        if result and result.embeddings and len(result.embeddings) > 0:
-            emb = result.embeddings[0].values if hasattr(result.embeddings[0], 'values') else list(result.embeddings[0])
-        
-        if emb is None:
-            return [random.uniform(0.01, 0.02) for _ in range(768)]
-        
-        if len(emb) != 768:
-            emb = emb[:768] if len(emb) > 768 else emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
-        
-        if all(abs(v) < 0.0001 for v in emb):
-            emb = [v + (random.random() * 0.0001 - 0.00005) for v in emb]
-        
-        return emb
-    except Exception as e:
-        print(f"[ERROR] embed_text: {e}")
-        return [random.uniform(0.01, 0.02) for _ in range(768)]
+
+def embed_text(text: str) -> List[float]:
+    """
+    Embed text using Gemini Embedding 2 with retry + backoff.
+
+    FIX 3: NEVER returns random fallback vectors — that silently
+           corrupts the Pinecone index. Raises on persistent failure
+           so the caller knows the chunk was not stored.
+    """
+    if not text or not text.strip():
+        raise ValueError("Cannot embed empty text")
+
+    text = text.strip()[:10000]
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            result = client.models.embed_content(
+                model="gemini-embedding-2",
+                contents=[text],
+                config=types.EmbedContentConfig(output_dimensionality=768),
+            )
+
+            if result and result.embeddings and len(result.embeddings) > 0:
+                emb = result.embeddings[0].values
+                if emb is not None:
+                    emb_list = list(emb)
+                    if len(emb_list) == 768:
+                        return emb_list
+
+            last_error = ValueError("Gemini returned empty or invalid embedding")
+
+        except Exception as e:
+            last_error = e
+
+        if attempt < 2:
+            time.sleep(2 ** attempt)  # 1s, 2s backoff
+
+    raise RuntimeError(
+        f"embed_text failed after 3 attempts: {last_error}"
+    )
+
 
 # ---------------- DUPLICATE PREVENTION CACHE ----------------
 _storage_cache = {}
@@ -196,92 +255,124 @@ def is_duplicate(user_id: str, item_type: str, hash_value: str) -> bool:
 def mark_stored(user_id: str, item_type: str, hash_value: str):
     _storage_cache[get_cache_key(user_id, item_type, hash_value)] = time.time()
 
+
 # ============================================
 # STORE NOTES & QUIZZES WITH NAMESPACE
 # ============================================
-def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None, user_timezone=None, namespace: str = "notes"):
+def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
+                            user_timezone=None, namespace: str = "notes"):
     """Store notes and quizzes with proper validation and namespace"""
-    # Validate user_id format
     if not validate_user_id(user_id):
         print(f"[ERROR] Invalid user_id format: {user_id}")
         return False
-    
+
     vectors = []
     timestamp = time.time()
-    
+
     try:
         local_time_info = {}
         if user_timezone and TIMEZONE_AVAILABLE:
             local_time_info = {
                 "local_time": format_timestamp_to_local(timestamp, user_timezone),
                 "relative_time": get_relative_time(timestamp, user_timezone),
-                "user_timezone": user_timezone
+                "user_timezone": user_timezone,
             }
-        
+
         if quiz_data:
             quiz_copy = quiz_data.copy()
             quiz_copy.pop('timestamp', None)
             quiz_copy.pop('difficulty_config', None)
-            content_hash = hashlib.md5(json.dumps(quiz_copy, sort_keys=True).encode()).hexdigest()
-            
+            content_hash = hashlib.md5(
+                json.dumps(quiz_copy, sort_keys=True).encode()
+            ).hexdigest()
+
             if is_duplicate(user_id, "quiz", content_hash):
                 print(f"[INFO] Duplicate quiz detected for user {user_id}, skipping storage")
                 return True
             mark_stored(user_id, "quiz", content_hash)
-        
+
         if notes_text:
             chunks = chunk_text(notes_text)
+
+            # Track how many chunks we successfully embedded
+            successful_chunks = 0
+            failed_chunks = 0
+
             for i, chunk in enumerate(chunks):
+                try:
+                    emb = embed_text(chunk)
+                except RuntimeError as e:
+                    print(f"[WARN] Skipping chunk {i} — embedding failed: {e}")
+                    failed_chunks += 1
+                    continue
+
                 metadata = {
-                    "type": "notes", 
-                    "text": chunk, 
-                    "user_id": user_id, 
+                    "type": "notes",
+                    "text": chunk,
+                    "user_id": user_id,
                     "chunk_index": i,
                     "timestamp": timestamp,
                     "source": "uploaded_notes",
-                    **local_time_info
+                    **local_time_info,
                 }
                 vectors.append({
                     "id": f"{user_id}_notes_{int(timestamp)}_{i}",
-                    "values": embed_text(chunk),
-                    "metadata": metadata
+                    "values": emb,
+                    "metadata": metadata,
                 })
-        
+                successful_chunks += 1
+
+            print(
+                f"[INFO] Embedded {successful_chunks}/{len(chunks)} chunks "
+                f"(failed: {failed_chunks})"
+            )
+
         if quiz_data:
             quiz_json = json.dumps(quiz_data)
+            try:
+                quiz_emb = embed_text(quiz_json)
+            except RuntimeError as e:
+                print(f"[WARN] Quiz embedding failed: {e}")
+                return False
+
             metadata = {
-                "type": "quiz", 
-                "quiz_data": quiz_json, 
+                "type": "quiz",
+                "quiz_data": quiz_json,
                 "user_id": user_id,
                 "timestamp": timestamp,
                 "source": "generated_quiz",
-                **local_time_info
+                **local_time_info,
             }
             vectors.append({
                 "id": f"{user_id}_quiz_{int(timestamp)}_{random.randint(1000, 9999)}",
-                "values": embed_text(quiz_json),
-                "metadata": metadata
+                "values": quiz_emb,
+                "metadata": metadata,
             })
-        
+
         if vectors:
-            # ✅ Store in the specified namespace (default: "notes")
             for i in range(0, len(vectors), 100):
-                index.upsert(vectors=vectors[i:i+100], namespace=namespace)
-            print(f"[INFO] Stored {len(vectors)} vectors for user {user_id} in namespace '{namespace}'")
+                index.upsert(vectors=vectors[i:i + 100], namespace=namespace)
+            print(
+                f"[INFO] Stored {len(vectors)} vectors for user {user_id} "
+                f"in namespace '{namespace}'"
+            )
             return True
         return False
+
     except Exception as e:
         print(f"[ERROR] store_notes_and_quizzes: {e}")
         return False
 
+
 # ============================================
 # FETCH NOTES FROM PINECONE
 # ============================================
-def fetch_notes_from_pinecone(user_id: str, limit: int = 50, namespace: str = "notes") -> list:
+def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
+                              namespace: str = "notes") -> list:
     """Fetch notes from the notes namespace"""
     if not validate_user_id(user_id):
         return []
-    
+
     try:
         import hashlib
         hash_obj = hashlib.sha256(user_id.encode())
@@ -290,7 +381,7 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50, namespace: str = "n
         for i in range(768):
             byte_val = hash_bytes[i % len(hash_bytes)]
             query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
-        
+
         results = index.query(
             vector=query_vector,
             top_k=limit,
@@ -298,10 +389,10 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50, namespace: str = "n
             namespace=namespace,
             filter={
                 "user_id": {"$eq": user_id},
-                "type": {"$eq": "notes"}
-            }
+                "type": {"$eq": "notes"},
+            },
         )
-        
+
         notes = []
         for match in results.matches:
             if match.metadata:
@@ -309,23 +400,25 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50, namespace: str = "n
                     "id": match.id,
                     "text": match.metadata.get('text', ''),
                     "chunk_index": match.metadata.get('chunk_index', 0),
-                    "timestamp": match.metadata.get('timestamp', 0)
+                    "timestamp": match.metadata.get('timestamp', 0),
                 })
-        
+
         notes.sort(key=lambda x: x.get('chunk_index', 0))
         return notes
     except Exception as e:
         print(f"[ERROR] fetch_notes_from_pinecone: {e}")
         return []
 
+
 # ============================================
 # FETCH QUIZZES FROM PINECONE
 # ============================================
-def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10, namespace: str = "notes") -> list:
+def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
+                                namespace: str = "notes") -> list:
     """Fetch quizzes from the notes namespace"""
     if not validate_user_id(user_id):
         return []
-    
+
     try:
         import hashlib
         hash_obj = hashlib.sha256(user_id.encode())
@@ -334,7 +427,7 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10, namespace: str = 
         for i in range(768):
             byte_val = hash_bytes[i % len(hash_bytes)]
             query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
-        
+
         results = index.query(
             vector=query_vector,
             top_k=limit,
@@ -342,10 +435,10 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10, namespace: str = 
             namespace=namespace,
             filter={
                 "user_id": {"$eq": user_id},
-                "type": {"$eq": "quiz"}
-            }
+                "type": {"$eq": "quiz"},
+            },
         )
-        
+
         quizzes = []
         for match in results.matches:
             if match.metadata:
@@ -355,15 +448,16 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10, namespace: str = 
                         "id": match.id,
                         "quiz_data": quiz_data,
                         "timestamp": match.metadata.get('timestamp', 0),
-                        "source": match.metadata.get('source', 'generated_quiz')
+                        "source": match.metadata.get('source', 'generated_quiz'),
                     })
                 except:
                     continue
-        
+
         return quizzes
     except Exception as e:
         print(f"[ERROR] fetch_quizzes_from_pinecone: {e}")
         return []
+
 
 # ==================== TOOLS ====================
 
@@ -384,11 +478,11 @@ def search_wikipedia_tool(query: str) -> str:
                 "list": "search",
                 "srsearch": query,
                 "format": "json",
-                "srlimit": 1
+                "srlimit": 1,
             }
             response = requests.get(url, params=params, timeout=5)
             data = response.json()
-            
+
             if data.get("query", {}).get("search"):
                 title = data["query"]["search"][0]["title"]
                 params = {
@@ -397,7 +491,7 @@ def search_wikipedia_tool(query: str) -> str:
                     "prop": "extracts",
                     "exintro": True,
                     "explaintext": True,
-                    "format": "json"
+                    "format": "json",
                 }
                 response = requests.get(url, params=params, timeout=5)
                 data = response.json()
@@ -405,10 +499,13 @@ def search_wikipedia_tool(query: str) -> str:
                 for page_id, page_data in pages.items():
                     if "extract" in page_data:
                         summary = page_data["extract"][:800]
-                        return f"📚 Wikipedia: {title}\n\n{summary}...\n\n🔗 https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-            
+                        return (
+                            f"📚 Wikipedia: {title}\n\n{summary}...\n\n"
+                            f"🔗 https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                        )
+
             return f"No Wikipedia articles found for '{query}'"
-            
+
     except wikipedia.exceptions.DisambiguationError as e:
         return f"Multiple pages found for '{query}'. Options: {', '.join(e.options[:5])}"
     except wikipedia.exceptions.PageError:
@@ -421,10 +518,14 @@ def search_wikipedia_tool(query: str) -> str:
             if response.status_code == 200:
                 data = response.json()
                 if "title" in data and "extract" in data:
-                    return f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:800]}...\n\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
+                    return (
+                        f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:800]}...\n\n"
+                        f"🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
+                    )
         except:
             pass
         return f"Error searching Wikipedia for '{query}'. Please try again."
+
 
 @tool
 def web_search_tool(query: str) -> str:
@@ -432,14 +533,14 @@ def web_search_tool(query: str) -> str:
     try:
         if not TAVILY_API_KEY:
             return "Tavily API key not configured. Please set TAVILY_API_KEY in .env file."
-        
+
         client = TavilyClient(api_key=TAVILY_API_KEY)
         response = client.search(
             query=query,
             search_depth="advanced",
             max_results=5,
         )
-        
+
         if response and isinstance(response, dict):
             results = response.get('results', [])
             if results:
@@ -448,12 +549,15 @@ def web_search_tool(query: str) -> str:
                     title = result.get('title', 'No title')
                     content = result.get('content', 'No content')[:300]
                     url = result.get('url', '')
-                    formatted_results.append(f"{i}. **{title}**\n   {content}...\n   🔗 {url}")
-                return f"🌐 Web Search Results:\n\n" + "\n\n".join(formatted_results)
-        
+                    formatted_results.append(
+                        f"{i}. **{title}**\n   {content}...\n   🔗 {url}"
+                    )
+                return "🌐 Web Search Results:\n\n" + "\n\n".join(formatted_results)
+
         return str(response) if response else "No web search results found"
     except Exception as e:
         return f"Error performing web search: {str(e)}"
+
 
 # ==================== RESEARCH AGENT FOR QUIZ GENERATION ====================
 
@@ -461,18 +565,18 @@ def research_topic_for_quiz(topic: str) -> str:
     """Use the LangChain agent with tools to research a topic for quiz generation."""
     try:
         print(f"[INFO] Researching topic with LangChain agent: {topic}")
-        
+
         system_prompt = """You are a research assistant that gathers comprehensive information about a topic for quiz creation.
-        
+
         Your task:
         1. Use available tools to research the topic thoroughly
         2. Gather key facts, concepts, and important details
         3. Return a well-structured summary of the topic
-        
+
         Available tools:
         - search_wikipedia: Search Wikipedia for encyclopedia knowledge
         - web_search: Search the web for current and comprehensive information
-        
+
         Important: Provide a thorough summary that covers the main aspects of the topic.
         Include definitions, key concepts, important facts, and any relevant details.
         """
@@ -480,7 +584,7 @@ def research_topic_for_quiz(topic: str) -> str:
         llm = ChatGroq(
             model="openai/gpt-oss-120b",
             temperature=0.3,
-            groq_api_key=GROQ_API_KEY
+            groq_api_key=GROQ_API_KEY,
         )
 
         tools = [search_wikipedia_tool, web_search_tool]
@@ -489,94 +593,97 @@ def research_topic_for_quiz(topic: str) -> str:
             model=llm,
             tools=tools,
             checkpointer=MemorySaver(),
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
         )
 
         messages = [
             ("user", f"Please research this topic thoroughly and provide a comprehensive summary: {topic}")
         ]
-        
+
         input_state = {"messages": messages}
-        
+
         config = {
             "configurable": {
                 "thread_id": f"quiz_research_{int(time.time())}"
             }
         }
-        
+
         research_summary = ""
-        
-        for chunk in agent.stream(
-            input_state, 
-            stream_mode="values",
-            config=config
-        ):
+
+        for chunk in agent.stream(input_state, stream_mode="values", config=config):
             last_msg = chunk["messages"][-1]
-            
+
             if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
                 print(f"\n🔧 Research agent using tools:")
                 for tool_call in last_msg.tool_calls:
                     print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
-            
+
             if hasattr(last_msg, 'content') and last_msg.content:
                 research_summary = last_msg.content
-        
+
         print(f"[INFO] Research summary length: {len(research_summary)} characters")
         return research_summary
-        
+
     except Exception as e:
         print(f"[ERROR] research_topic_for_quiz: {e}")
         import traceback
         traceback.print_exc()
         return f"Topic: {topic}. Create quiz based on general knowledge."
 
+
 # ---------------- CREATE FALLBACK QUIZ ----------------
 def create_fallback_quiz(topic: str, difficulty: str, config: dict) -> Dict[str, Any]:
     return {
         "quiz": [
             {
-                "question": f"Which of the following statements about '{topic}' are correct? (Select ALL that apply)" if difficulty == "difficult" else f"What is the main topic of '{topic}'?",
-                "options": {
-                    "A": "The concept is widely accepted in scientific literature",
-                    "B": "It has multiple interpretations depending on context",
-                    "C": "It was first proposed in the 21st century",
-                    "D": "It applies only to specific cases"
-                } if difficulty == "difficult" else {
-                    "A": "General knowledge",
-                    "B": "Science and technology",
-                    "C": "Arts and humanities",
-                    "D": "Social sciences"
-                },
+                "question": (
+                    f"Which of the following statements about '{topic}' are correct? (Select ALL that apply)"
+                    if difficulty == "difficult"
+                    else f"What is the main topic of '{topic}'?"
+                ),
+                "options": (
+                    {
+                        "A": "The concept is widely accepted in scientific literature",
+                        "B": "It has multiple interpretations depending on context",
+                        "C": "It was first proposed in the 21st century",
+                        "D": "It applies only to specific cases",
+                    }
+                    if difficulty == "difficult"
+                    else {
+                        "A": "General knowledge",
+                        "B": "Science and technology",
+                        "C": "Arts and humanities",
+                        "D": "Social sciences",
+                    }
+                ),
                 "answer": "A,B" if difficulty == "difficult" else "A",
-                "answer_type": "multiple" if difficulty == "difficult" else "single"
+                "answer_type": "multiple" if difficulty == "difficult" else "single",
             }
         ],
         "topic": topic[:100],
         "difficulty": difficulty,
         "source": "fallback",
-        "difficulty_config": config
+        "difficulty_config": config,
     }
 
+
 # ---------------- GENERATE QUIZ ----------------
-def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user", 
-                           num_questions: int = 5, difficulty: str = "medium",
-                           user_timezone: str = None,
-                           store_quiz: bool = True,
-                           use_tools: bool = True) -> Dict[str, Any]:
+def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user",
+                             num_questions: int = 5, difficulty: str = "medium",
+                             user_timezone: str = None,
+                             store_quiz: bool = True,
+                             use_tools: bool = True) -> Dict[str, Any]:
     """
     Generate a quiz from notes or topic with namespace support.
     """
-    # Validate user_id
     if not validate_user_id(user_id):
         print(f"[ERROR] Invalid user_id: {user_id}")
         user_id = "default_user"
-    
+
     is_topic = len(notes_text.strip()) < 100 or " " not in notes_text.strip()
-    
-    # Use tools if it's a topic and tools are enabled
+
     if is_topic and use_tools:
         print(f"[INFO] Generating quiz from topic using LangChain agent research: {notes_text}")
-        
         research_context = research_topic_for_quiz(notes_text.strip())
         notes_preview = research_context[:3000].strip()
         source_label = "topic with AI research"
@@ -585,37 +692,37 @@ def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user",
         notes_preview = notes_text[:3000].strip()
         source_label = "study notes"
         tools_used = False
-    
+
     if not notes_preview:
         notes_preview = "General knowledge and study material"
-    
+
     difficulty_configs = {
         "easy": {
             "description": "Basic recall questions testing simple facts.",
-            "correct_options": "single"
+            "correct_options": "single",
         },
         "medium": {
             "description": "Understanding and application questions.",
-            "correct_options": "single"
+            "correct_options": "single",
         },
         "hard": {
             "description": "Analysis and evaluation questions.",
-            "correct_options": "mixed"
+            "correct_options": "mixed",
         },
         "difficult": {
             "description": "Extremely challenging questions with multiple correct answers.",
-            "correct_options": "multiple"
-        }
+            "correct_options": "multiple",
+        },
     }
-    
+
     config = difficulty_configs.get(difficulty, difficulty_configs["medium"])
-    
+
     difficult_prompt_addon = """
 FOR DIFFICULT LEVEL QUESTIONS:
 1. Most questions (at least 60%) should have MULTIPLE correct answers
 2. For single-answer questions, make them extremely tricky
 """ if difficulty == "difficult" else ""
-    
+
     prompt = f"""
 You are an expert quiz creator. Create {num_questions} multiple-choice questions based on the following {source_label}:
 
@@ -651,34 +758,34 @@ Output valid JSON in this format:
   "difficulty": "{difficulty}"
 }}
 """
-    
+
     try:
         print(f"[INFO] Generating quiz with difficulty: {difficulty}")
-        
+
         if not GROQ_API_KEY:
             print("[ERROR] GROQ_API_KEY not found!")
             return create_fallback_quiz(notes_text[:100], difficulty, config)
-        
+
         llm = ChatGroq(
             model="openai/gpt-oss-120b",
             temperature=0.7,
-            groq_api_key=GROQ_API_KEY
+            groq_api_key=GROQ_API_KEY,
         )
-        
+
         response = llm.invoke(prompt)
         text = response.text if hasattr(response, 'text') else str(response)
         text = re.sub(r'```json\s*|```\s*', '', text.strip())
-        
+
         start_idx = text.find('{')
         end_idx = text.rfind('}')
         if start_idx != -1 and end_idx != -1:
             text = text[start_idx:end_idx + 1]
-        
+
         quiz_data = json.loads(text)
-        
+
         if "quiz" not in quiz_data or not isinstance(quiz_data["quiz"], list):
             raise ValueError("Invalid quiz structure")
-        
+
         for q in quiz_data["quiz"]:
             answer = q.get("answer", "").strip()
             if "," in answer:
@@ -688,33 +795,34 @@ Output valid JSON in this format:
             else:
                 q["answer_type"] = "single"
                 q["answer"] = answer.upper() if answer else ""
-        
+
         quiz_data["difficulty_config"] = config
         quiz_data["source"] = "topic_with_agent" if tools_used else ("topic" if is_topic else "notes")
         quiz_data["tools_used"] = tools_used
-        
+
         print(f"[INFO] Generated {len(quiz_data['quiz'])} questions")
-        
+
         if store_quiz:
             store_notes_and_quizzes(
                 user_id=user_id,
                 quiz_data=quiz_data,
                 user_timezone=user_timezone,
-                namespace="notes"  # ✅ Store in notes namespace
+                namespace="notes",
             )
-        
+
         return quiz_data
-        
+
     except Exception as e:
         print(f"[ERROR] generate_quiz_from_notes: {e}")
         import traceback
         traceback.print_exc()
         return create_fallback_quiz(notes_text[:100], difficulty, config)
 
+
 # ---------------- CONVENIENCE FUNCTION ----------------
 def generate_quiz_from_topic(topic: str, user_id: str = "default_user",
-                           num_questions: int = 5, difficulty: str = "medium",
-                           user_timezone: str = None, store_quiz: bool = True) -> Dict[str, Any]:
+                             num_questions: int = 5, difficulty: str = "medium",
+                             user_timezone: str = None, store_quiz: bool = True) -> Dict[str, Any]:
     return generate_quiz_from_notes(
         notes_text=topic,
         user_id=user_id,
@@ -722,8 +830,9 @@ def generate_quiz_from_topic(topic: str, user_id: str = "default_user",
         difficulty=difficulty,
         user_timezone=user_timezone,
         store_quiz=store_quiz,
-        use_tools=True
+        use_tools=True,
     )
+
 
 # ---------------- FORMAT QUIZ ----------------
 def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
@@ -732,47 +841,51 @@ def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
         f"📊 Difficulty: {quiz_data.get('difficulty', 'medium').upper()}",
         f"🔍 Tools Used: {'Yes ✅' if quiz_data.get('tools_used', False) else 'No'}",
         f"📄 Source: {quiz_data.get('source', 'unknown')}",
-        "=" * 50
+        "=" * 50,
     ]
-    
+
     for i, q in enumerate(quiz_data.get("quiz", [])):
         output.append(f"\nQ{i+1}. {q['question']}")
         for opt, text in q['options'].items():
             output.append(f"   {opt}) {text}")
-        
+
         answer_type = q.get('answer_type', 'single')
         if answer_type == 'multiple':
-            output.append(f"   💡 This question has MULTIPLE correct answers (select ALL that apply)")
+            output.append("   💡 This question has MULTIPLE correct answers (select ALL that apply)")
         else:
-            output.append(f"   💡 This question has a SINGLE correct answer")
-    
+            output.append("   💡 This question has a SINGLE correct answer")
+
     return "\n".join(output)
 
+
 # ---------------- QUIZ EVALUATION ----------------
-def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezone=None, store_progress=True):
+def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
+                          user_timezone=None, store_progress=True):
     """
     Evaluate a quiz attempt and optionally store progress with namespace support.
     """
-    # Validate user_id
     if user_id and not validate_user_id(user_id):
         print(f"[WARNING] Invalid user_id: {user_id}, progress will not be stored")
         user_id = None
-    
+
     correct = 0
     total = len(quiz_json.get("quiz", []))
     feedback = []
-    
+
     for i, q in enumerate(quiz_json.get("quiz", [])):
-        correct_answers = set(q.get("answer", "").upper().split(",")) if q.get("answer") else set()
+        correct_answers = (
+            set(q.get("answer", "").upper().split(","))
+            if q.get("answer") else set()
+        )
         user_answer = student_answers.get(i, student_answers.get(str(i), "")).strip().upper()
         user_answers = set(user_answer.split(",")) if user_answer else set()
-        
+
         is_correct = user_answers == correct_answers
         if is_correct:
             correct += 1
-        
+
         answer_type = q.get("answer_type", "single")
-        
+
         if is_correct:
             status = "✅ Correct"
             explanation = "Well done! You answered correctly."
@@ -781,18 +894,28 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
                 missing = correct_answers - user_answers
                 extra = user_answers - correct_answers
                 if missing and extra:
-                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. Missed: {', '.join(sorted(missing))}. Extra: {', '.join(sorted(extra))}"
+                    explanation = (
+                        f"Correct: {', '.join(sorted(correct_answers))}. "
+                        f"Missed: {', '.join(sorted(missing))}. "
+                        f"Extra: {', '.join(sorted(extra))}"
+                    )
                 elif missing:
-                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. You missed: {', '.join(sorted(missing))}"
+                    explanation = (
+                        f"Correct: {', '.join(sorted(correct_answers))}. "
+                        f"You missed: {', '.join(sorted(missing))}"
+                    )
                 elif extra:
-                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. You added extra: {', '.join(sorted(extra))}"
+                    explanation = (
+                        f"Correct: {', '.join(sorted(correct_answers))}. "
+                        f"You added extra: {', '.join(sorted(extra))}"
+                    )
                 else:
                     explanation = f"Correct answers: {', '.join(sorted(correct_answers))}"
             else:
                 explanation = f"The correct answer is {', '.join(sorted(correct_answers))}"
-            
+
             status = "❌ Incorrect" if answer_type == "single" else "❌ Partially correct"
-        
+
         feedback.append({
             "question": q["question"],
             "status": status,
@@ -800,11 +923,11 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
             "user_answers": list(user_answers),
             "answer_type": answer_type,
             "explanation": explanation,
-            "is_correct": is_correct
+            "is_correct": is_correct,
         })
-    
+
     accuracy = round((correct / total * 100), 2) if total else 0
-    
+
     partial_score = 0
     for fb in feedback:
         if fb["answer_type"] == "multiple" and not fb["is_correct"]:
@@ -816,7 +939,7 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
                 partial = (correct_selected - (incorrect_selected * 0.5)) / len(correct_set)
                 if partial > 0:
                     partial_score += partial
-    
+
     progress_data = {
         "score": correct,
         "adjusted_score": round(correct + partial_score, 2),
@@ -829,73 +952,75 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None, user_timezon
         "source": quiz_json.get("source", "unknown"),
         "tools_used": quiz_json.get("tools_used", False),
         "difficulty_config": quiz_json.get("difficulty_config", {}),
-        "partial_credit": round(partial_score, 2)
+        "partial_credit": round(partial_score, 2),
     }
-    
-    # Store progress if requested and user_id is provided
+
     if store_progress and user_id:
         try:
             print(f"[INFO] Storing progress for user: {user_id}")
-            
+
             from Progress import store_progress as store_progress_data
-            
+
             success = store_progress_data(
                 user_id=user_id,
                 progress_data=progress_data,
                 user_timezone=user_timezone,
-                namespace="progress"  # ✅ Store in progress namespace
+                namespace="progress",
             )
-            
+
             if success:
                 print(f"[INFO] Progress stored successfully for user {user_id}")
             else:
                 print(f"[WARNING] Failed to store progress for user {user_id}")
-                
+
         except ImportError as e:
             print(f"[WARNING] Progress module not found: {e}")
             try:
                 store_progress_direct(user_id, progress_data, user_timezone)
             except Exception as e2:
                 print(f"[ERROR] Direct storage failed: {e2}")
-                
+
         except Exception as e:
             print(f"[ERROR] Failed to store progress: {e}")
             import traceback
             traceback.print_exc()
-    
+
     return progress_data
 
+
 # ---------------- DIRECT PROGRESS STORAGE (FALLBACK) ----------------
-def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_timezone=None) -> bool:
+def store_progress_direct(user_id: str, progress_data: Dict[str, Any],
+                          user_timezone=None) -> bool:
     """
     Direct storage of progress data to Pinecone with namespace support.
     """
     try:
-        # Validate user_id
         if not validate_user_id(user_id):
             print(f"[ERROR] Invalid user_id: {user_id}")
             return False
-        
+
         timestamp = time.time()
-        
+
         progress_copy = progress_data.copy()
         progress_copy.pop('timestamp', None)
-        progress_hash = hashlib.md5(json.dumps(progress_copy, sort_keys=True).encode()).hexdigest()
-        
+        progress_hash = hashlib.md5(
+            json.dumps(progress_copy, sort_keys=True).encode()
+        ).hexdigest()
+
         if is_duplicate(user_id, "progress", progress_hash):
             print(f"[INFO] Duplicate progress detected for user {user_id}, skipping storage")
             return True
-        
+
         mark_stored(user_id, "progress", progress_hash)
-        
+
         local_time_info = {}
         if user_timezone and TIMEZONE_AVAILABLE:
             local_time_info = {
                 "local_time": format_timestamp_to_local(timestamp, user_timezone),
                 "relative_time": get_relative_time(timestamp, user_timezone),
-                "user_timezone": user_timezone
+                "user_timezone": user_timezone,
             }
-        
+
         progress_json = json.dumps(progress_data)
         metadata = {
             "type": "progress",
@@ -904,37 +1029,41 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any], user_time
             "timestamp": timestamp,
             "source": "quiz_result",
             "progress_hash": progress_hash,
-            **local_time_info
+            **local_time_info,
         }
-        
+
         emb = embed_text(progress_json)
-        
+
         if len(emb) != 768:
             print(f"[WARNING] Embedding length {len(emb)} != 768, adjusting")
             if len(emb) < 768:
                 emb = emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
             else:
                 emb = emb[:768]
-        
+
         vector = {
             "id": f"{user_id}_progress_{int(timestamp)}_{progress_hash[:8]}",
             "values": emb,
-            "metadata": metadata
+            "metadata": metadata,
         }
-        
-        # ✅ Store in progress namespace
+
         index.upsert(vectors=[vector], namespace="progress")
-        print(f"[INFO] Direct storage: Progress vector stored for user {user_id} in namespace 'progress'")
+        print(
+            f"[INFO] Direct storage: Progress vector stored for user {user_id} "
+            f"in namespace 'progress'"
+        )
         return True
-        
+
     except Exception as e:
         print(f"[ERROR] Direct storage failed: {e}")
         import traceback
         traceback.print_exc()
         return False
 
+
 # ---------------- STORE PROGRESS (WRAPPER) ----------------
-def store_progress(user_id: str, progress_data: Dict[str, Any], user_timezone=None) -> bool:
+def store_progress(user_id: str, progress_data: Dict[str, Any],
+                   user_timezone=None) -> bool:
     """
     Wrapper function to store progress with namespace support.
     """
