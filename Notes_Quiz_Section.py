@@ -58,6 +58,7 @@ except ImportError:
     print("[WARNING] pytz not installed. Install with: pip install pytz")
     TIMEZONE_AVAILABLE = False
 
+
 # ---------------- TIMEZONE UTILITIES ----------------
 def get_user_timezone(timezone_str=None):
     if not TIMEZONE_AVAILABLE:
@@ -69,6 +70,7 @@ def get_user_timezone(timezone_str=None):
     except:
         return pytz.timezone(DEFAULT_TIMEZONE)
 
+
 def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d %H:%M:%S"):
     if not TIMEZONE_AVAILABLE:
         return datetime.utcfromtimestamp(timestamp).strftime(format_str)
@@ -78,6 +80,7 @@ def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d
         return dt_utc.astimezone(user_tz).strftime(format_str)
     except:
         return datetime.utcfromtimestamp(timestamp).strftime(format_str)
+
 
 def get_relative_time(timestamp, timezone_str=None):
     now = time.time()
@@ -92,6 +95,7 @@ def get_relative_time(timestamp, timezone_str=None):
         return f"{int(diff / 86400)} days ago"
     return format_timestamp_to_local(timestamp, timezone_str, "%b %d, %Y")
 
+
 # ============================================
 # USER ID VALIDATION
 # ============================================
@@ -105,6 +109,7 @@ def validate_user_id(user_id: str) -> bool:
         return False
     return True
 
+
 # ---------------- FILE EXTRACTION HELPERS ----------------
 def extract_text_from_pdf(file_path):
     text = ""
@@ -113,12 +118,15 @@ def extract_text_from_pdf(file_path):
             text += page.get_text("text") + "\n"
     return text.strip()
 
+
 def extract_text_from_docx(file_path):
     return docx2txt.process(file_path).strip()
+
 
 def extract_text_from_txt(file_path):
     with open(file_path, "r", encoding="utf-8") as f:
         return f.read().strip()
+
 
 def extract_text(file_path):
     ext = os.path.splitext(file_path)[1].lower()
@@ -131,8 +139,9 @@ def extract_text(file_path):
     else:
         raise ValueError(f"Unsupported file format: {ext}")
 
+
 # ============================================
-# CHUNKING & EMBEDDINGS — FIXED
+# CHUNKING & EMBEDDINGS — FIXED & HARDENED
 # ============================================
 
 def chunk_text(
@@ -239,18 +248,35 @@ def embed_text(text: str) -> List[float]:
     )
 
 
+def embed_text_safe(text: str) -> List[float]:
+    """
+    Safe wrapper around embed_text.
+
+    Never returns a random vector. On failure, returns None so the
+    caller can skip the chunk instead of poisoning the index.
+    """
+    try:
+        return embed_text(text)
+    except RuntimeError as exc:
+        print(f"[WARN] embed_text_safe failed: {exc}")
+        return None
+
+
 # ---------------- DUPLICATE PREVENTION CACHE ----------------
 _storage_cache = {}
 _cache_expiry = 300
 
+
 def get_cache_key(user_id: str, item_type: str, hash_value: str) -> str:
     return f"{user_id}:{item_type}:{hash_value}"
+
 
 def is_duplicate(user_id: str, item_type: str, hash_value: str) -> bool:
     cache_key = get_cache_key(user_id, item_type, hash_value)
     if cache_key in _storage_cache:
         return time.time() - _storage_cache[cache_key] < _cache_expiry
     return False
+
 
 def mark_stored(user_id: str, item_type: str, hash_value: str):
     _storage_cache[get_cache_key(user_id, item_type, hash_value)] = time.time()
@@ -299,10 +325,9 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
             failed_chunks = 0
 
             for i, chunk in enumerate(chunks):
-                try:
-                    emb = embed_text(chunk)
-                except RuntimeError as e:
-                    print(f"[WARN] Skipping chunk {i} — embedding failed: {e}")
+                emb = embed_text_safe(chunk)
+                if emb is None:
+                    print(f"[WARN] Skipping chunk {i} — embedding failed")
                     failed_chunks += 1
                     continue
 
@@ -329,10 +354,10 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
 
         if quiz_data:
             quiz_json = json.dumps(quiz_data)
-            try:
-                quiz_emb = embed_text(quiz_json)
-            except RuntimeError as e:
-                print(f"[WARN] Quiz embedding failed: {e}")
+            quiz_emb = embed_text_safe(quiz_json)
+
+            if quiz_emb is None:
+                print(f"[WARN] Quiz embedding failed — quiz not stored")
                 return False
 
             metadata = {
@@ -361,6 +386,8 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
 
     except Exception as e:
         print(f"[ERROR] store_notes_and_quizzes: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -374,7 +401,6 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
         return []
 
     try:
-        import hashlib
         hash_obj = hashlib.sha256(user_id.encode())
         hash_bytes = hash_obj.digest()
         query_vector = []
@@ -420,7 +446,6 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
         return []
 
     try:
-        import hashlib
         hash_obj = hashlib.sha256(user_id.encode())
         hash_bytes = hash_obj.digest()
         query_vector = []
@@ -534,8 +559,8 @@ def web_search_tool(query: str) -> str:
         if not TAVILY_API_KEY:
             return "Tavily API key not configured. Please set TAVILY_API_KEY in .env file."
 
-        client = TavilyClient(api_key=TAVILY_API_KEY)
-        response = client.search(
+        tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+        response = tavily_client.search(
             query=query,
             search_depth="advanced",
             max_results=5,
@@ -1032,14 +1057,11 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any],
             **local_time_info,
         }
 
-        emb = embed_text(progress_json)
+        emb = embed_text_safe(progress_json)
 
-        if len(emb) != 768:
-            print(f"[WARNING] Embedding length {len(emb)} != 768, adjusting")
-            if len(emb) < 768:
-                emb = emb + [random.uniform(0.001, 0.002) for _ in range(768 - len(emb))]
-            else:
-                emb = emb[:768]
+        if emb is None:
+            print(f"[WARN] Progress embedding failed — progress not stored")
+            return False
 
         vector = {
             "id": f"{user_id}_progress_{int(timestamp)}_{progress_hash[:8]}",
