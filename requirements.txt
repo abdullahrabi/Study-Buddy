@@ -3,6 +3,7 @@ google-genai
 python-dotenv
 pinecone
 PyMuPDF
+pymupdf4llm
 docx2txt
 requests
 pytz

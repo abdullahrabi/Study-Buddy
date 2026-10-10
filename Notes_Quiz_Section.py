@@ -67,7 +67,7 @@ def get_user_timezone(timezone_str=None):
         if timezone_str:
             return pytz.timezone(timezone_str)
         return pytz.timezone(DEFAULT_TIMEZONE)
-    except:
+    except Exception:
         return pytz.timezone(DEFAULT_TIMEZONE)
 
 
@@ -78,7 +78,7 @@ def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d
         dt_utc = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.UTC)
         user_tz = get_user_timezone(timezone_str)
         return dt_utc.astimezone(user_tz).strftime(format_str)
-    except:
+    except Exception:
         return datetime.utcfromtimestamp(timestamp).strftime(format_str)
 
 
@@ -100,18 +100,51 @@ def get_relative_time(timestamp, timezone_str=None):
 # USER ID VALIDATION
 # ============================================
 def validate_user_id(user_id: str) -> bool:
-    """Validate user_id format"""
+    """Validate user_id format.
+
+    Rejects placeholders like 'default_user', 'Unknown', 'None', and ''.
+    Real user IDs must start with 'user_'.
+    """
     if not user_id:
         return False
-    if user_id in ['default_user', 'Unknown', 'None', '']:
+    if user_id in ('default_user', 'Unknown', 'None', ''):
         return False
     if not user_id.startswith('user_'):
         return False
     return True
 
 
-# ---------------- FILE EXTRACTION HELPERS ----------------
+# ============================================
+# FILE EXTRACTION — FIXED (markdown-aware PDF)
+# ============================================
+
+try:
+    import pymupdf4llm
+    PYMUPDF4LLM_AVAILABLE = True
+except ImportError:
+    PYMUPDF4LLM_AVAILABLE = False
+    print("[WARN] pymupdf4llm not installed — falling back to basic extraction.")
+    print("       Install for better results: pip install pymupdf4llm")
+
+
 def extract_text_from_pdf(file_path):
+    """
+    Extract text from PDF with markdown-aware extraction.
+
+    pymupdf4llm preserves word boundaries, formula notation, list
+    structure, and paragraph separation. Basic PyMuPDF extraction
+    fuses words and drops formulas on academic PDFs (e.g. "a regular"
+    becomes "aregular", "composition" becomes "composi").
+    """
+    if PYMUPDF4LLM_AVAILABLE:
+        try:
+            md = pymupdf4llm.to_markdown(file_path)
+            if md and len(md.strip()) > 100:
+                return md.strip()
+        except Exception as exc:
+            print(f"[WARN] pymupdf4llm failed: {exc}. Falling back.")
+
+    # Fallback: basic extraction
     text = ""
     with fitz.open(file_path) as pdf:
         for page in pdf:
@@ -141,39 +174,74 @@ def extract_text(file_path):
 
 
 # ============================================
-# CHUNKING & EMBEDDINGS — FIXED & HARDENED
+# CHUNKING — HARDENED WITH NOISE FILTER + MIN SIZE
 # ============================================
+
+MIN_CHUNK_CHARS = 200
+
+
+def _is_noise(text: str) -> bool:
+    """Filter page numbers, TOC lines, and bibliography entries."""
+    s = text.strip()
+    if not s:
+        return True
+
+    # Pure page number (e.g. "1", "42")
+    if re.fullmatch(r'\d{1,4}', s):
+        return True
+
+    # Bibliography-style: "1. Author, Title, Publisher."
+    if re.match(r'^\d+\.\s+[A-Z][^.]{5,}\.', s) and len(s) < 200:
+        return True
+
+    # TOC line: "Module - VII Introduction to..."
+    if re.match(r'^Module\s*[-–]\s*[IVX]+', s):
+        return True
+
+    return False
+
 
 def chunk_text(
     text: str,
     max_chars: int = 800,
     overlap_sentences: int = 1,
+    min_chars: int = MIN_CHUNK_CHARS,
 ) -> List[str]:
     """
-    Paragraph-aware chunking with sentence overlap.
+    Paragraph-aware chunking with sentence overlap, noise filtering,
+    and minimum-size merging.
 
-    FIX 1: Paragraph-first splitting preserves structured content
-           (definitions, lists, formulas).
-    FIX 2: Overlap between chunks prevents losing information that
-           spans a boundary.
+    - Splits on paragraph boundaries first
+    - Sentence-level overlap between adjacent chunks
+    - Merges trailing chunks smaller than min_chars into previous chunk
+    - Skips page numbers, TOC lines, and bibliography entries
     """
     text = text.strip()
     if not text:
         return []
 
-    # Split by paragraphs first to preserve structure
     paragraphs = re.split(r'\n\s*\n', text)
 
     chunks: List[str] = []
     current_chunk = ""
     current_sentences: List[str] = []
 
+    def _flush():
+        nonlocal current_chunk, current_sentences
+        chunk = current_chunk.strip()
+        if not chunk:
+            return
+        # Merge undersized trailing chunk into previous
+        if len(chunk) < min_chars and chunks:
+            chunks[-1] = chunks[-1] + " " + chunk
+        else:
+            chunks.append(chunk)
+
     for para in paragraphs:
         para = para.strip()
-        if not para:
+        if not para or _is_noise(para):
             continue
 
-        # If a paragraph alone exceeds max_chars, split it by sentences
         if len(para) > max_chars:
             sentences = re.split(r'(?<=[.!?])\s+', para)
         else:
@@ -181,50 +249,58 @@ def chunk_text(
 
         for sentence in sentences:
             sentence = sentence.strip()
-            if not sentence:
+            if not sentence or _is_noise(sentence):
                 continue
 
             if len(current_chunk) + len(sentence) + 1 <= max_chars:
-                current_chunk += (" " + sentence) if current_chunk else sentence
+                current_chunk = (
+                    (current_chunk + " " + sentence) if current_chunk else sentence
+                )
                 current_sentences.append(sentence)
             else:
-                if current_chunk:
-                    chunks.append(current_chunk)
-
-                # FIX: carry over last N sentences as overlap
-                if overlap_sentences > 0 and len(current_sentences) > 0:
-                    overlap = current_sentences[-overlap_sentences:]
-                else:
-                    overlap = []
-
+                _flush()
+                overlap = (
+                    current_sentences[-overlap_sentences:]
+                    if overlap_sentences > 0 and current_sentences
+                    else []
+                )
                 current_chunk = " ".join(overlap + [sentence]) if overlap else sentence
                 current_sentences = overlap + [sentence]
 
     if current_chunk:
-        chunks.append(current_chunk)
+        _flush()
 
     return chunks
 
 
+# ============================================
+# EMBEDDINGS — WITH TASK PREFIX + RETRY
+# ============================================
+
+# Gemini Embedding 2 dropped the task_type parameter, so we prepend
+# task instructions for proper asymmetric retrieval. The query side
+# (RAG_Eval.py) must use the matching QUERY prefix.
+DOC_PREFIX = "title: none | text: "
+
+
 def embed_text(text: str) -> List[float]:
     """
-    Embed text using Gemini Embedding 2 with retry + backoff.
+    Embed text using Gemini Embedding 2 with task prefix + retry.
 
-    FIX 3: NEVER returns random fallback vectors — that silently
-           corrupts the Pinecone index. Raises on persistent failure
-           so the caller knows the chunk was not stored.
+    Never returns random fallback vectors — raises on persistent
+    failure so the caller knows the chunk was not stored.
     """
     if not text or not text.strip():
         raise ValueError("Cannot embed empty text")
 
-    text = text.strip()[:10000]
+    prefixed = (DOC_PREFIX + text.strip())[:10000]
 
     last_error = None
     for attempt in range(3):
         try:
             result = client.models.embed_content(
                 model="gemini-embedding-2",
-                contents=[text],
+                contents=[prefixed],
                 config=types.EmbedContentConfig(output_dimensionality=768),
             )
 
@@ -243,9 +319,7 @@ def embed_text(text: str) -> List[float]:
         if attempt < 2:
             time.sleep(2 ** attempt)  # 1s, 2s backoff
 
-    raise RuntimeError(
-        f"embed_text failed after 3 attempts: {last_error}"
-    )
+    raise RuntimeError(f"embed_text failed after 3 attempts: {last_error}")
 
 
 def embed_text_safe(text: str) -> List[float]:
@@ -320,7 +394,6 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
         if notes_text:
             chunks = chunk_text(notes_text)
 
-            # Track how many chunks we successfully embedded
             successful_chunks = 0
             failed_chunks = 0
 
@@ -392,24 +465,17 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
 
 
 # ============================================
-# FETCH NOTES FROM PINECONE
+# FETCH NOTES FROM PINECONE — ZERO VECTOR
 # ============================================
 def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
                               namespace: str = "notes") -> list:
-    """Fetch notes from the notes namespace"""
+    """Fetch notes using filter-only query (zero vector)."""
     if not validate_user_id(user_id):
         return []
 
     try:
-        hash_obj = hashlib.sha256(user_id.encode())
-        hash_bytes = hash_obj.digest()
-        query_vector = []
-        for i in range(768):
-            byte_val = hash_bytes[i % len(hash_bytes)]
-            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
-
         results = index.query(
-            vector=query_vector,
+            vector=[0.0] * 768,  # standard idiom for filter-only queries
             top_k=limit,
             include_metadata=True,
             namespace=namespace,
@@ -437,24 +503,17 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
 
 
 # ============================================
-# FETCH QUIZZES FROM PINECONE
+# FETCH QUIZZES FROM PINECONE — ZERO VECTOR
 # ============================================
 def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
                                 namespace: str = "notes") -> list:
-    """Fetch quizzes from the notes namespace"""
+    """Fetch quizzes using filter-only query (zero vector)."""
     if not validate_user_id(user_id):
         return []
 
     try:
-        hash_obj = hashlib.sha256(user_id.encode())
-        hash_bytes = hash_obj.digest()
-        query_vector = []
-        for i in range(768):
-            byte_val = hash_bytes[i % len(hash_bytes)]
-            query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
-
         results = index.query(
-            vector=query_vector,
+            vector=[0.0] * 768,
             top_k=limit,
             include_metadata=True,
             namespace=namespace,
@@ -475,7 +534,7 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
                         "timestamp": match.metadata.get('timestamp', 0),
                         "source": match.metadata.get('source', 'generated_quiz'),
                     })
-                except:
+                except Exception:
                     continue
 
         return quizzes
@@ -547,7 +606,7 @@ def search_wikipedia_tool(query: str) -> str:
                         f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:800]}...\n\n"
                         f"🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
                     )
-        except:
+        except Exception:
             pass
         return f"Error searching Wikipedia for '{query}'. Please try again."
 
@@ -693,17 +752,22 @@ def create_fallback_quiz(topic: str, difficulty: str, config: dict) -> Dict[str,
 
 
 # ---------------- GENERATE QUIZ ----------------
-def generate_quiz_from_notes(notes_text: str, user_id: str = "default_user",
+def generate_quiz_from_notes(notes_text: str, user_id: str,
                              num_questions: int = 5, difficulty: str = "medium",
                              user_timezone: str = None,
                              store_quiz: bool = True,
                              use_tools: bool = True) -> Dict[str, Any]:
     """
     Generate a quiz from notes or topic with namespace support.
+
+    Note: user_id is REQUIRED. Silent fallback to 'default_user' has
+    been removed — pass a real user ID.
     """
     if not validate_user_id(user_id):
-        print(f"[ERROR] Invalid user_id: {user_id}")
-        user_id = "default_user"
+        raise ValueError(
+            f"Invalid user_id '{user_id}'. Must start with 'user_' "
+            f"and not be a placeholder (e.g. 'default_user')."
+        )
 
     is_topic = len(notes_text.strip()) < 100 or " " not in notes_text.strip()
 
@@ -845,7 +909,7 @@ Output valid JSON in this format:
 
 
 # ---------------- CONVENIENCE FUNCTION ----------------
-def generate_quiz_from_topic(topic: str, user_id: str = "default_user",
+def generate_quiz_from_topic(topic: str, user_id: str,
                              num_questions: int = 5, difficulty: str = "medium",
                              user_timezone: str = None, store_quiz: bool = True) -> Dict[str, Any]:
     return generate_quiz_from_notes(
