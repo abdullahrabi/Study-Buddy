@@ -100,11 +100,7 @@ def get_relative_time(timestamp, timezone_str=None):
 # USER ID VALIDATION
 # ============================================
 def validate_user_id(user_id: str) -> bool:
-    """Validate user_id format.
-
-    Rejects placeholders like 'default_user', 'Unknown', 'None', and ''.
-    Real user IDs must start with 'user_'.
-    """
+    """Validate user_id format. Rejects placeholders. Real IDs start with 'user_'."""
     if not user_id:
         return False
     if user_id in ('default_user', 'Unknown', 'None', ''):
@@ -115,36 +111,87 @@ def validate_user_id(user_id: str) -> bool:
 
 
 # ============================================
-# FILE EXTRACTION — FIXED (markdown-aware PDF)
+# FILE EXTRACTION — lightningdoc > pymupdf4llm > basic
 # ============================================
 
+# lightningdoc (high-performance, math-aware, no PyTorch)
+try:
+    from lightningdoc import extract_text_from_pdf as lightningdoc_extract
+    LIGHTNINGDOC_AVAILABLE = True
+except ImportError:
+    LIGHTNINGDOC_AVAILABLE = False
+    print("[INFO] lightningdoc not installed. Install for best results: pip install lightningdoc")
+    print("       Note: Tesseract OCR must be installed on the system.")
+
+# pymupdf4llm (markdown-aware, fast, good quality)
 try:
     import pymupdf4llm
     PYMUPDF4LLM_AVAILABLE = True
 except ImportError:
     PYMUPDF4LLM_AVAILABLE = False
     print("[WARN] pymupdf4llm not installed — falling back to basic extraction.")
-    print("       Install for better results: pip install pymupdf4llm")
+
+
+def _normalize_math_glyphs(text: str) -> str:
+    """
+    Safety net: replace broken PDF glyphs with sensible defaults.
+    Also collapses excessive whitespace.
+    """
+    # Most common context is set-membership in this PDF
+    text = text.replace("\uFFFD", "∈")
+
+    # Normalize typographic punctuation
+    replacements = [
+        ("−", "-"),
+        ("–", "-"),
+        ("—", "--"),
+        ("’", "'"),
+        ("“", '"'),
+        ("”", '"'),
+    ]
+    for old, new in replacements:
+        text = text.replace(old, new)
+
+    # Collapse excessive whitespace
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    return text
 
 
 def extract_text_from_pdf(file_path):
     """
-    Extract text from PDF with markdown-aware extraction.
+    Extract text from PDF.
 
-    pymupdf4llm preserves word boundaries, formula notation, list
-    structure, and paragraph separation. Basic PyMuPDF extraction
-    fuses words and drops formulas on academic PDFs (e.g. "a regular"
-    becomes "aregular", "composition" becomes "composi").
+    Priority:
+      1. lightningdoc — fast, math-aware, lightweight (requires Tesseract OCR)
+      2. pymupdf4llm — markdown-aware (fast, good)
+      3. PyMuPDF basic — fallback (fast, poor on math)
     """
+    # --- Attempt 1: lightningdoc ---
+    if LIGHTNINGDOC_AVAILABLE:
+        try:
+            print(f"[INFO] Extracting with lightningdoc...")
+            text = lightningdoc_extract(file_path)
+            if text and len(text.strip()) > 100:
+                print(f"[INFO] lightningdoc extracted {len(text)} chars")
+                return text.strip()
+        except Exception as exc:
+            print(f"[WARN] lightningdoc failed: {exc}. Falling back.")
+
+    # --- Attempt 2: pymupdf4llm ---
     if PYMUPDF4LLM_AVAILABLE:
         try:
+            print("[INFO] Falling back to pymupdf4llm...")
             md = pymupdf4llm.to_markdown(file_path)
             if md and len(md.strip()) > 100:
+                print(f"[INFO] pymupdf4llm extracted {len(md)} chars")
                 return md.strip()
         except Exception as exc:
             print(f"[WARN] pymupdf4llm failed: {exc}. Falling back.")
 
-    # Fallback: basic extraction
+    # --- Attempt 3: PyMuPDF basic ---
+    print("[INFO] Using basic PyMuPDF extraction")
     text = ""
     with fitz.open(file_path) as pdf:
         for page in pdf:
@@ -162,15 +209,19 @@ def extract_text_from_txt(file_path):
 
 
 def extract_text(file_path):
+    """Extract text from PDF/DOCX/TXT with math glyph normalization."""
     ext = os.path.splitext(file_path)[1].lower()
+
     if ext == ".pdf":
-        return extract_text_from_pdf(file_path)
+        raw = extract_text_from_pdf(file_path)
     elif ext == ".docx":
-        return extract_text_from_docx(file_path)
+        raw = extract_text_from_docx(file_path)
     elif ext == ".txt":
-        return extract_text_from_txt(file_path)
+        raw = extract_text_from_txt(file_path)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
+
+    return _normalize_math_glyphs(raw)
 
 
 # ============================================
@@ -185,19 +236,12 @@ def _is_noise(text: str) -> bool:
     s = text.strip()
     if not s:
         return True
-
-    # Pure page number (e.g. "1", "42")
     if re.fullmatch(r'\d{1,4}', s):
         return True
-
-    # Bibliography-style: "1. Author, Title, Publisher."
     if re.match(r'^\d+\.\s+[A-Z][^.]{5,}\.', s) and len(s) < 200:
         return True
-
-    # TOC line: "Module - VII Introduction to..."
     if re.match(r'^Module\s*[-–]\s*[IVX]+', s):
         return True
-
     return False
 
 
@@ -210,11 +254,6 @@ def chunk_text(
     """
     Paragraph-aware chunking with sentence overlap, noise filtering,
     and minimum-size merging.
-
-    - Splits on paragraph boundaries first
-    - Sentence-level overlap between adjacent chunks
-    - Merges trailing chunks smaller than min_chars into previous chunk
-    - Skips page numbers, TOC lines, and bibliography entries
     """
     text = text.strip()
     if not text:
@@ -231,7 +270,6 @@ def chunk_text(
         chunk = current_chunk.strip()
         if not chunk:
             return
-        # Merge undersized trailing chunk into previous
         if len(chunk) < min_chars and chunks:
             chunks[-1] = chunks[-1] + " " + chunk
         else:
@@ -277,19 +315,11 @@ def chunk_text(
 # EMBEDDINGS — WITH TASK PREFIX + RETRY
 # ============================================
 
-# Gemini Embedding 2 dropped the task_type parameter, so we prepend
-# task instructions for proper asymmetric retrieval. The query side
-# (RAG_Eval.py) must use the matching QUERY prefix.
 DOC_PREFIX = "title: none | text: "
 
 
 def embed_text(text: str) -> List[float]:
-    """
-    Embed text using Gemini Embedding 2 with task prefix + retry.
-
-    Never returns random fallback vectors — raises on persistent
-    failure so the caller knows the chunk was not stored.
-    """
+    """Embed text with Gemini Embedding 2, with task prefix + retry."""
     if not text or not text.strip():
         raise ValueError("Cannot embed empty text")
 
@@ -303,32 +333,23 @@ def embed_text(text: str) -> List[float]:
                 contents=[prefixed],
                 config=types.EmbedContentConfig(output_dimensionality=768),
             )
-
             if result and result.embeddings and len(result.embeddings) > 0:
                 emb = result.embeddings[0].values
                 if emb is not None:
                     emb_list = list(emb)
                     if len(emb_list) == 768:
                         return emb_list
-
             last_error = ValueError("Gemini returned empty or invalid embedding")
-
         except Exception as e:
             last_error = e
-
         if attempt < 2:
-            time.sleep(2 ** attempt)  # 1s, 2s backoff
+            time.sleep(2 ** attempt)
 
     raise RuntimeError(f"embed_text failed after 3 attempts: {last_error}")
 
 
 def embed_text_safe(text: str) -> List[float]:
-    """
-    Safe wrapper around embed_text.
-
-    Never returns a random vector. On failure, returns None so the
-    caller can skip the chunk instead of poisoning the index.
-    """
+    """Safe wrapper. Returns None on failure (never random vectors)."""
     try:
         return embed_text(text)
     except RuntimeError as exc:
@@ -361,7 +382,7 @@ def mark_stored(user_id: str, item_type: str, hash_value: str):
 # ============================================
 def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
                             user_timezone=None, namespace: str = "notes"):
-    """Store notes and quizzes with proper validation and namespace"""
+    """Store notes and quizzes with proper validation and namespace."""
     if not validate_user_id(user_id):
         print(f"[ERROR] Invalid user_id format: {user_id}")
         return False
@@ -385,7 +406,6 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
             content_hash = hashlib.md5(
                 json.dumps(quiz_copy, sort_keys=True).encode()
             ).hexdigest()
-
             if is_duplicate(user_id, "quiz", content_hash):
                 print(f"[INFO] Duplicate quiz detected for user {user_id}, skipping storage")
                 return True
@@ -393,7 +413,6 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
 
         if notes_text:
             chunks = chunk_text(notes_text)
-
             successful_chunks = 0
             failed_chunks = 0
 
@@ -420,19 +439,14 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
                 })
                 successful_chunks += 1
 
-            print(
-                f"[INFO] Embedded {successful_chunks}/{len(chunks)} chunks "
-                f"(failed: {failed_chunks})"
-            )
+            print(f"[INFO] Embedded {successful_chunks}/{len(chunks)} chunks (failed: {failed_chunks})")
 
         if quiz_data:
             quiz_json = json.dumps(quiz_data)
             quiz_emb = embed_text_safe(quiz_json)
-
             if quiz_emb is None:
                 print(f"[WARN] Quiz embedding failed — quiz not stored")
                 return False
-
             metadata = {
                 "type": "quiz",
                 "quiz_data": quiz_json,
@@ -450,10 +464,7 @@ def store_notes_and_quizzes(user_id: str, notes_text=None, quiz_data=None,
         if vectors:
             for i in range(0, len(vectors), 100):
                 index.upsert(vectors=vectors[i:i + 100], namespace=namespace)
-            print(
-                f"[INFO] Stored {len(vectors)} vectors for user {user_id} "
-                f"in namespace '{namespace}'"
-            )
+            print(f"[INFO] Stored {len(vectors)} vectors for user {user_id} in namespace '{namespace}'")
             return True
         return False
 
@@ -472,10 +483,9 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
     """Fetch notes using filter-only query (zero vector)."""
     if not validate_user_id(user_id):
         return []
-
     try:
         results = index.query(
-            vector=[0.0] * 768,  # standard idiom for filter-only queries
+            vector=[0.0] * 768,
             top_k=limit,
             include_metadata=True,
             namespace=namespace,
@@ -484,7 +494,6 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
                 "type": {"$eq": "notes"},
             },
         )
-
         notes = []
         for match in results.matches:
             if match.metadata:
@@ -494,7 +503,6 @@ def fetch_notes_from_pinecone(user_id: str, limit: int = 50,
                     "chunk_index": match.metadata.get('chunk_index', 0),
                     "timestamp": match.metadata.get('timestamp', 0),
                 })
-
         notes.sort(key=lambda x: x.get('chunk_index', 0))
         return notes
     except Exception as e:
@@ -510,7 +518,6 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
     """Fetch quizzes using filter-only query (zero vector)."""
     if not validate_user_id(user_id):
         return []
-
     try:
         results = index.query(
             vector=[0.0] * 768,
@@ -522,7 +529,6 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
                 "type": {"$eq": "quiz"},
             },
         )
-
         quizzes = []
         for match in results.matches:
             if match.metadata:
@@ -536,7 +542,6 @@ def fetch_quizzes_from_pinecone(user_id: str, limit: int = 10,
                     })
                 except Exception:
                     continue
-
         return quizzes
     except Exception as e:
         print(f"[ERROR] fetch_quizzes_from_pinecone: {e}")
@@ -557,39 +562,20 @@ def search_wikipedia_tool(query: str) -> str:
             return f"📚 Wikipedia: {page.title}\n\n{page.summary[:800]}...\n\n🔗 {page.url}"
         except json.JSONDecodeError:
             url = "https://en.wikipedia.org/w/api.php"
-            params = {
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "format": "json",
-                "srlimit": 1,
-            }
+            params = {"action": "query", "list": "search", "srsearch": query, "format": "json", "srlimit": 1}
             response = requests.get(url, params=params, timeout=5)
             data = response.json()
-
             if data.get("query", {}).get("search"):
                 title = data["query"]["search"][0]["title"]
-                params = {
-                    "action": "query",
-                    "titles": title,
-                    "prop": "extracts",
-                    "exintro": True,
-                    "explaintext": True,
-                    "format": "json",
-                }
+                params = {"action": "query", "titles": title, "prop": "extracts", "exintro": True, "explaintext": True, "format": "json"}
                 response = requests.get(url, params=params, timeout=5)
                 data = response.json()
                 pages = data.get("query", {}).get("pages", {})
                 for page_id, page_data in pages.items():
                     if "extract" in page_data:
                         summary = page_data["extract"][:800]
-                        return (
-                            f"📚 Wikipedia: {title}\n\n{summary}...\n\n"
-                            f"🔗 https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
-                        )
-
+                        return f"📚 Wikipedia: {title}\n\n{summary}...\n\n🔗 https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"
             return f"No Wikipedia articles found for '{query}'"
-
     except wikipedia.exceptions.DisambiguationError as e:
         return f"Multiple pages found for '{query}'. Options: {', '.join(e.options[:5])}"
     except wikipedia.exceptions.PageError:
@@ -602,10 +588,7 @@ def search_wikipedia_tool(query: str) -> str:
             if response.status_code == 200:
                 data = response.json()
                 if "title" in data and "extract" in data:
-                    return (
-                        f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:800]}...\n\n"
-                        f"🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
-                    )
+                    return f"📚 Wikipedia: {data['title']}\n\n{data['extract'][:800]}...\n\n🔗 {data.get('content_urls', {}).get('desktop', {}).get('page', '')}"
         except Exception:
             pass
         return f"Error searching Wikipedia for '{query}'. Please try again."
@@ -617,14 +600,8 @@ def web_search_tool(query: str) -> str:
     try:
         if not TAVILY_API_KEY:
             return "Tavily API key not configured. Please set TAVILY_API_KEY in .env file."
-
         tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
-        response = tavily_client.search(
-            query=query,
-            search_depth="advanced",
-            max_results=5,
-        )
-
+        response = tavily_client.search(query=query, search_depth="advanced", max_results=5)
         if response and isinstance(response, dict):
             results = response.get('results', [])
             if results:
@@ -633,11 +610,8 @@ def web_search_tool(query: str) -> str:
                     title = result.get('title', 'No title')
                     content = result.get('content', 'No content')[:300]
                     url = result.get('url', '')
-                    formatted_results.append(
-                        f"{i}. **{title}**\n   {content}...\n   🔗 {url}"
-                    )
+                    formatted_results.append(f"{i}. **{title}**\n   {content}...\n   🔗 {url}")
                 return "🌐 Web Search Results:\n\n" + "\n\n".join(formatted_results)
-
         return str(response) if response else "No web search results found"
     except Exception as e:
         return f"Error performing web search: {str(e)}"
@@ -649,65 +623,27 @@ def research_topic_for_quiz(topic: str) -> str:
     """Use the LangChain agent with tools to research a topic for quiz generation."""
     try:
         print(f"[INFO] Researching topic with LangChain agent: {topic}")
-
         system_prompt = """You are a research assistant that gathers comprehensive information about a topic for quiz creation.
-
-        Your task:
-        1. Use available tools to research the topic thoroughly
-        2. Gather key facts, concepts, and important details
-        3. Return a well-structured summary of the topic
-
-        Available tools:
-        - search_wikipedia: Search Wikipedia for encyclopedia knowledge
-        - web_search: Search the web for current and comprehensive information
-
-        Important: Provide a thorough summary that covers the main aspects of the topic.
-        Include definitions, key concepts, important facts, and any relevant details.
-        """
-
-        llm = ChatGroq(
-            model="openai/gpt-oss-120b",
-            temperature=0.3,
-            groq_api_key=GROQ_API_KEY,
-        )
-
+        Your task: 1. Use available tools to research the topic thoroughly. 2. Gather key facts, concepts, and important details. 3. Return a well-structured summary of the topic.
+        Available tools: - search_wikipedia: Search Wikipedia for encyclopedia knowledge - web_search: Search the web for current and comprehensive information
+        Important: Provide a thorough summary that covers the main aspects of the topic. Include definitions, key concepts, important facts, and any relevant details."""
+        llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.3, groq_api_key=GROQ_API_KEY)
         tools = [search_wikipedia_tool, web_search_tool]
-
-        agent = create_agent(
-            model=llm,
-            tools=tools,
-            checkpointer=MemorySaver(),
-            system_prompt=system_prompt,
-        )
-
-        messages = [
-            ("user", f"Please research this topic thoroughly and provide a comprehensive summary: {topic}")
-        ]
-
+        agent = create_agent(model=llm, tools=tools, checkpointer=MemorySaver(), system_prompt=system_prompt)
+        messages = [("user", f"Please research this topic thoroughly and provide a comprehensive summary: {topic}")]
         input_state = {"messages": messages}
-
-        config = {
-            "configurable": {
-                "thread_id": f"quiz_research_{int(time.time())}"
-            }
-        }
-
+        config = {"configurable": {"thread_id": f"quiz_research_{int(time.time())}"}}
         research_summary = ""
-
         for chunk in agent.stream(input_state, stream_mode="values", config=config):
             last_msg = chunk["messages"][-1]
-
             if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
                 print(f"\n🔧 Research agent using tools:")
                 for tool_call in last_msg.tool_calls:
                     print(f"   - {tool_call['name']}: {tool_call['args'].get('query', '')}")
-
             if hasattr(last_msg, 'content') and last_msg.content:
                 research_summary = last_msg.content
-
         print(f"[INFO] Research summary length: {len(research_summary)} characters")
         return research_summary
-
     except Exception as e:
         print(f"[ERROR] research_topic_for_quiz: {e}")
         import traceback
@@ -722,23 +658,11 @@ def create_fallback_quiz(topic: str, difficulty: str, config: dict) -> Dict[str,
             {
                 "question": (
                     f"Which of the following statements about '{topic}' are correct? (Select ALL that apply)"
-                    if difficulty == "difficult"
-                    else f"What is the main topic of '{topic}'?"
+                    if difficulty == "difficult" else f"What is the main topic of '{topic}'?"
                 ),
                 "options": (
-                    {
-                        "A": "The concept is widely accepted in scientific literature",
-                        "B": "It has multiple interpretations depending on context",
-                        "C": "It was first proposed in the 21st century",
-                        "D": "It applies only to specific cases",
-                    }
-                    if difficulty == "difficult"
-                    else {
-                        "A": "General knowledge",
-                        "B": "Science and technology",
-                        "C": "Arts and humanities",
-                        "D": "Social sciences",
-                    }
+                    {"A": "The concept is widely accepted in scientific literature", "B": "It has multiple interpretations depending on context", "C": "It was first proposed in the 21st century", "D": "It applies only to specific cases"}
+                    if difficulty == "difficult" else {"A": "General knowledge", "B": "Science and technology", "C": "Arts and humanities", "D": "Social sciences"}
                 ),
                 "answer": "A,B" if difficulty == "difficult" else "A",
                 "answer_type": "multiple" if difficulty == "difficult" else "single",
@@ -757,17 +681,9 @@ def generate_quiz_from_notes(notes_text: str, user_id: str,
                              user_timezone: str = None,
                              store_quiz: bool = True,
                              use_tools: bool = True) -> Dict[str, Any]:
-    """
-    Generate a quiz from notes or topic with namespace support.
-
-    Note: user_id is REQUIRED. Silent fallback to 'default_user' has
-    been removed — pass a real user ID.
-    """
+    """Generate a quiz from notes or topic with namespace support."""
     if not validate_user_id(user_id):
-        raise ValueError(
-            f"Invalid user_id '{user_id}'. Must start with 'user_' "
-            f"and not be a placeholder (e.g. 'default_user')."
-        )
+        raise ValueError(f"Invalid user_id '{user_id}'. Must start with 'user_' and not be a placeholder.")
 
     is_topic = len(notes_text.strip()) < 100 or " " not in notes_text.strip()
 
@@ -786,24 +702,11 @@ def generate_quiz_from_notes(notes_text: str, user_id: str,
         notes_preview = "General knowledge and study material"
 
     difficulty_configs = {
-        "easy": {
-            "description": "Basic recall questions testing simple facts.",
-            "correct_options": "single",
-        },
-        "medium": {
-            "description": "Understanding and application questions.",
-            "correct_options": "single",
-        },
-        "hard": {
-            "description": "Analysis and evaluation questions.",
-            "correct_options": "mixed",
-        },
-        "difficult": {
-            "description": "Extremely challenging questions with multiple correct answers.",
-            "correct_options": "multiple",
-        },
+        "easy": {"description": "Basic recall questions testing simple facts.", "correct_options": "single"},
+        "medium": {"description": "Understanding and application questions.", "correct_options": "single"},
+        "hard": {"description": "Analysis and evaluation questions.", "correct_options": "mixed"},
+        "difficult": {"description": "Extremely challenging questions with multiple correct answers.", "correct_options": "multiple"},
     }
-
     config = difficulty_configs.get(difficulty, difficulty_configs["medium"])
 
     difficult_prompt_addon = """
@@ -833,12 +736,7 @@ Output valid JSON in this format:
   "quiz": [
     {{
       "question": "Question text here?",
-      "options": {{
-        "A": "Option A text",
-        "B": "Option B text", 
-        "C": "Option C text",
-        "D": "Option D text"
-      }},
+      "options": {{"A": "Option A text", "B": "Option B text", "C": "Option C text", "D": "Option D text"}},
       "answer": "A,B",
       "answer_type": "multiple"
     }}
@@ -847,29 +745,20 @@ Output valid JSON in this format:
   "difficulty": "{difficulty}"
 }}
 """
-
     try:
         print(f"[INFO] Generating quiz with difficulty: {difficulty}")
-
         if not GROQ_API_KEY:
             print("[ERROR] GROQ_API_KEY not found!")
             return create_fallback_quiz(notes_text[:100], difficulty, config)
 
-        llm = ChatGroq(
-            model="openai/gpt-oss-120b",
-            temperature=0.7,
-            groq_api_key=GROQ_API_KEY,
-        )
-
+        llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.7, groq_api_key=GROQ_API_KEY)
         response = llm.invoke(prompt)
         text = response.text if hasattr(response, 'text') else str(response)
         text = re.sub(r'```json\s*|```\s*', '', text.strip())
-
         start_idx = text.find('{')
         end_idx = text.rfind('}')
         if start_idx != -1 and end_idx != -1:
             text = text[start_idx:end_idx + 1]
-
         quiz_data = json.loads(text)
 
         if "quiz" not in quiz_data or not isinstance(quiz_data["quiz"], list):
@@ -888,19 +777,11 @@ Output valid JSON in this format:
         quiz_data["difficulty_config"] = config
         quiz_data["source"] = "topic_with_agent" if tools_used else ("topic" if is_topic else "notes")
         quiz_data["tools_used"] = tools_used
-
         print(f"[INFO] Generated {len(quiz_data['quiz'])} questions")
 
         if store_quiz:
-            store_notes_and_quizzes(
-                user_id=user_id,
-                quiz_data=quiz_data,
-                user_timezone=user_timezone,
-                namespace="notes",
-            )
-
+            store_notes_and_quizzes(user_id=user_id, quiz_data=quiz_data, user_timezone=user_timezone, namespace="notes")
         return quiz_data
-
     except Exception as e:
         print(f"[ERROR] generate_quiz_from_notes: {e}")
         import traceback
@@ -912,15 +793,7 @@ Output valid JSON in this format:
 def generate_quiz_from_topic(topic: str, user_id: str,
                              num_questions: int = 5, difficulty: str = "medium",
                              user_timezone: str = None, store_quiz: bool = True) -> Dict[str, Any]:
-    return generate_quiz_from_notes(
-        notes_text=topic,
-        user_id=user_id,
-        num_questions=num_questions,
-        difficulty=difficulty,
-        user_timezone=user_timezone,
-        store_quiz=store_quiz,
-        use_tools=True,
-    )
+    return generate_quiz_from_notes(notes_text=topic, user_id=user_id, num_questions=num_questions, difficulty=difficulty, user_timezone=user_timezone, store_quiz=store_quiz, use_tools=True)
 
 
 # ---------------- FORMAT QUIZ ----------------
@@ -932,27 +805,22 @@ def format_quiz_for_display(quiz_data: Dict[str, Any]) -> str:
         f"📄 Source: {quiz_data.get('source', 'unknown')}",
         "=" * 50,
     ]
-
     for i, q in enumerate(quiz_data.get("quiz", [])):
         output.append(f"\nQ{i+1}. {q['question']}")
         for opt, text in q['options'].items():
             output.append(f"   {opt}) {text}")
-
         answer_type = q.get('answer_type', 'single')
         if answer_type == 'multiple':
             output.append("   💡 This question has MULTIPLE correct answers (select ALL that apply)")
         else:
             output.append("   💡 This question has a SINGLE correct answer")
-
     return "\n".join(output)
 
 
 # ---------------- QUIZ EVALUATION ----------------
 def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
                           user_timezone=None, store_progress=True):
-    """
-    Evaluate a quiz attempt and optionally store progress with namespace support.
-    """
+    """Evaluate a quiz attempt and optionally store progress."""
     if user_id and not validate_user_id(user_id):
         print(f"[WARNING] Invalid user_id: {user_id}, progress will not be stored")
         user_id = None
@@ -962,10 +830,7 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
     feedback = []
 
     for i, q in enumerate(quiz_json.get("quiz", [])):
-        correct_answers = (
-            set(q.get("answer", "").upper().split(","))
-            if q.get("answer") else set()
-        )
+        correct_answers = set(q.get("answer", "").upper().split(",")) if q.get("answer") else set()
         user_answer = student_answers.get(i, student_answers.get(str(i), "")).strip().upper()
         user_answers = set(user_answer.split(",")) if user_answer else set()
 
@@ -974,7 +839,6 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
             correct += 1
 
         answer_type = q.get("answer_type", "single")
-
         if is_correct:
             status = "✅ Correct"
             explanation = "Well done! You answered correctly."
@@ -983,40 +847,24 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
                 missing = correct_answers - user_answers
                 extra = user_answers - correct_answers
                 if missing and extra:
-                    explanation = (
-                        f"Correct: {', '.join(sorted(correct_answers))}. "
-                        f"Missed: {', '.join(sorted(missing))}. "
-                        f"Extra: {', '.join(sorted(extra))}"
-                    )
+                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. Missed: {', '.join(sorted(missing))}. Extra: {', '.join(sorted(extra))}"
                 elif missing:
-                    explanation = (
-                        f"Correct: {', '.join(sorted(correct_answers))}. "
-                        f"You missed: {', '.join(sorted(missing))}"
-                    )
+                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. You missed: {', '.join(sorted(missing))}"
                 elif extra:
-                    explanation = (
-                        f"Correct: {', '.join(sorted(correct_answers))}. "
-                        f"You added extra: {', '.join(sorted(extra))}"
-                    )
+                    explanation = f"Correct: {', '.join(sorted(correct_answers))}. You added extra: {', '.join(sorted(extra))}"
                 else:
                     explanation = f"Correct answers: {', '.join(sorted(correct_answers))}"
             else:
                 explanation = f"The correct answer is {', '.join(sorted(correct_answers))}"
-
             status = "❌ Incorrect" if answer_type == "single" else "❌ Partially correct"
 
         feedback.append({
-            "question": q["question"],
-            "status": status,
-            "correct_answers": list(correct_answers),
-            "user_answers": list(user_answers),
-            "answer_type": answer_type,
-            "explanation": explanation,
-            "is_correct": is_correct,
+            "question": q["question"], "status": status, "correct_answers": list(correct_answers),
+            "user_answers": list(user_answers), "answer_type": answer_type,
+            "explanation": explanation, "is_correct": is_correct,
         })
 
     accuracy = round((correct / total * 100), 2) if total else 0
-
     partial_score = 0
     for fb in feedback:
         if fb["answer_type"] == "multiple" and not fb["is_correct"]:
@@ -1030,15 +878,10 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
                     partial_score += partial
 
     progress_data = {
-        "score": correct,
-        "adjusted_score": round(correct + partial_score, 2),
-        "total": total,
-        "accuracy": accuracy,
-        "feedback": feedback,
-        "timestamp": time.time(),
-        "difficulty": quiz_json.get("difficulty", "medium"),
-        "topic": quiz_json.get("topic", "Unknown"),
-        "source": quiz_json.get("source", "unknown"),
+        "score": correct, "adjusted_score": round(correct + partial_score, 2),
+        "total": total, "accuracy": accuracy, "feedback": feedback,
+        "timestamp": time.time(), "difficulty": quiz_json.get("difficulty", "medium"),
+        "topic": quiz_json.get("topic", "Unknown"), "source": quiz_json.get("source", "unknown"),
         "tools_used": quiz_json.get("tools_used", False),
         "difficulty_config": quiz_json.get("difficulty_config", {}),
         "partial_credit": round(partial_score, 2),
@@ -1047,59 +890,41 @@ def evaluate_quiz_attempt(quiz_json, student_answers, user_id=None,
     if store_progress and user_id:
         try:
             print(f"[INFO] Storing progress for user: {user_id}")
-
             from Progress import store_progress as store_progress_data
-
-            success = store_progress_data(
-                user_id=user_id,
-                progress_data=progress_data,
-                user_timezone=user_timezone,
-                namespace="progress",
-            )
-
+            success = store_progress_data(user_id=user_id, progress_data=progress_data, user_timezone=user_timezone, namespace="progress")
             if success:
                 print(f"[INFO] Progress stored successfully for user {user_id}")
             else:
                 print(f"[WARNING] Failed to store progress for user {user_id}")
-
         except ImportError as e:
             print(f"[WARNING] Progress module not found: {e}")
             try:
                 store_progress_direct(user_id, progress_data, user_timezone)
             except Exception as e2:
                 print(f"[ERROR] Direct storage failed: {e2}")
-
         except Exception as e:
             print(f"[ERROR] Failed to store progress: {e}")
             import traceback
             traceback.print_exc()
-
     return progress_data
 
 
 # ---------------- DIRECT PROGRESS STORAGE (FALLBACK) ----------------
 def store_progress_direct(user_id: str, progress_data: Dict[str, Any],
                           user_timezone=None) -> bool:
-    """
-    Direct storage of progress data to Pinecone with namespace support.
-    """
+    """Direct storage of progress data to Pinecone."""
     try:
         if not validate_user_id(user_id):
             print(f"[ERROR] Invalid user_id: {user_id}")
             return False
-
         timestamp = time.time()
-
         progress_copy = progress_data.copy()
         progress_copy.pop('timestamp', None)
-        progress_hash = hashlib.md5(
-            json.dumps(progress_copy, sort_keys=True).encode()
-        ).hexdigest()
+        progress_hash = hashlib.md5(json.dumps(progress_copy, sort_keys=True).encode()).hexdigest()
 
         if is_duplicate(user_id, "progress", progress_hash):
             print(f"[INFO] Duplicate progress detected for user {user_id}, skipping storage")
             return True
-
         mark_stored(user_id, "progress", progress_hash)
 
         local_time_info = {}
@@ -1112,34 +937,22 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any],
 
         progress_json = json.dumps(progress_data)
         metadata = {
-            "type": "progress",
-            "progress_data": progress_json,
-            "user_id": user_id,
-            "timestamp": timestamp,
-            "source": "quiz_result",
-            "progress_hash": progress_hash,
+            "type": "progress", "progress_data": progress_json, "user_id": user_id,
+            "timestamp": timestamp, "source": "quiz_result", "progress_hash": progress_hash,
             **local_time_info,
         }
-
         emb = embed_text_safe(progress_json)
-
         if emb is None:
             print(f"[WARN] Progress embedding failed — progress not stored")
             return False
 
         vector = {
             "id": f"{user_id}_progress_{int(timestamp)}_{progress_hash[:8]}",
-            "values": emb,
-            "metadata": metadata,
+            "values": emb, "metadata": metadata,
         }
-
         index.upsert(vectors=[vector], namespace="progress")
-        print(
-            f"[INFO] Direct storage: Progress vector stored for user {user_id} "
-            f"in namespace 'progress'"
-        )
+        print(f"[INFO] Direct storage: Progress vector stored for user {user_id} in namespace 'progress'")
         return True
-
     except Exception as e:
         print(f"[ERROR] Direct storage failed: {e}")
         import traceback
@@ -1150,7 +963,5 @@ def store_progress_direct(user_id: str, progress_data: Dict[str, Any],
 # ---------------- STORE PROGRESS (WRAPPER) ----------------
 def store_progress(user_id: str, progress_data: Dict[str, Any],
                    user_timezone=None) -> bool:
-    """
-    Wrapper function to store progress with namespace support.
-    """
+    """Wrapper function to store progress with namespace support."""
     return store_progress_direct(user_id, progress_data, user_timezone)

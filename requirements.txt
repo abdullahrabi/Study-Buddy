@@ -3,7 +3,11 @@ google-genai
 python-dotenv
 pinecone
 PyMuPDF
-pymupdf4llm
+lightningdoc
+numpy
+opencv-python-headless
+pillow
+pytesseract
 docx2txt
 requests
 pytz
@@ -19,4 +23,4 @@ langgraph-checkpoint
 typing-extensions
 pydantic
 bcrypt
-PyJWT 
+PyJWT
