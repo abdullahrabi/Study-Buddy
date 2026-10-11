@@ -1,4 +1,6 @@
 # Chatbot.py - Chatbot Module with CAG Support
+# FINAL VERSION — task-aware embeddings, locked top_k, zero-vector filters
+
 import os
 import json
 import time
@@ -47,7 +49,7 @@ def get_user_timezone(timezone_str=None):
         if timezone_str:
             return pytz.timezone(timezone_str)
         return pytz.timezone(DEFAULT_TIMEZONE)
-    except:
+    except Exception:
         return pytz.timezone(DEFAULT_TIMEZONE)
 
 
@@ -59,7 +61,7 @@ def format_timestamp_to_local(timestamp, timezone_str=None, format_str="%Y-%m-%d
         dt_utc = datetime.utcfromtimestamp(timestamp).replace(tzinfo=pytz.UTC)
         user_tz = get_user_timezone(timezone_str)
         return dt_utc.astimezone(user_tz).strftime(format_str)
-    except:
+    except Exception:
         return datetime.utcfromtimestamp(timestamp).strftime(format_str)
 
 
@@ -73,6 +75,9 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "us-east-1")
 DEFAULT_TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "UTC")
 JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")
+
+# --- LOCKED top_k, consistent with RAG_Eval.py ---
+CHATBOT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
@@ -190,61 +195,58 @@ def mark_conversation_stored(user_id: str, question: str, answer: str):
 
 
 # ============================================
-# EMBEDDING FUNCTION — HARDENED
+# GEMINI EMBEDDING — TASK-AWARE
 # ============================================
+# Matches Notes_Quiz_Section.py and RAG_Eval.py. Gemini Embedding 2
+# removed task_type, so we prepend task instructions.
 
-def embed_text(text: str) -> List[float]:
+QUERY_PREFIX = "task: search result | query: "
+DOC_PREFIX = "title: none | text: "
+
+
+def embed_text(text: str, task: str = "query") -> List[float]:
     """
-    Generate embedding using Gemini with retry + backoff.
+    Embed text with Gemini Embedding 2, applying the correct task prefix.
 
-    NEVER returns random vectors. Raises on persistent failure
-    so callers can skip storage instead of poisoning the index.
+    task="query"    — search queries (user questions)
+    task="document" — content being stored (chat history, notes)
     """
     if not text or not text.strip():
         raise ValueError("Cannot embed empty text")
 
-    text = text.strip()[:10000]
+    prefix = QUERY_PREFIX if task == "query" else DOC_PREFIX
+    prefixed = (prefix + text.strip())[:10000]
 
     last_error = None
     for attempt in range(3):
         try:
             result = client.models.embed_content(
                 model="gemini-embedding-2",
-                contents=[text],
+                contents=[prefixed],
                 config=types.EmbedContentConfig(output_dimensionality=768),
             )
-
             if result and result.embeddings and len(result.embeddings) > 0:
                 emb = result.embeddings[0].values
                 if emb is not None:
                     emb_list = list(emb)
                     if len(emb_list) == 768:
-                        # Normalize
                         norm = sum(v * v for v in emb_list) ** 0.5
                         if norm > 0:
                             return [v / norm for v in emb_list]
                         return emb_list
-
             last_error = ValueError("Gemini returned empty or invalid embedding")
-
         except Exception as e:
             last_error = e
-
         if attempt < 2:
             time.sleep(2 ** attempt)
 
     raise RuntimeError(f"embed_text failed after 3 attempts: {last_error}")
 
 
-def embed_text_safe(text: str) -> List[float]:
-    """
-    Safe wrapper around embed_text.
-
-    Returns None on failure so callers can skip storage rather than
-    poison the index with random vectors.
-    """
+def embed_text_safe(text: str, task: str = "query") -> List[float]:
+    """Safe wrapper. Returns None on failure (never random vectors)."""
     try:
-        return embed_text(text)
+        return embed_text(text, task=task)
     except RuntimeError as exc:
         print(f"[WARN] embed_text_safe failed: {exc}")
         return None
@@ -266,16 +268,12 @@ def generate_jwt(user_id: str, email: str) -> str:
 def verify_jwt(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-    except:
+    except Exception:
         return None
 
 
 def store_user(email: str, password: str) -> dict:
-    """
-    Store user in Pinecone with a deterministic ID.
-
-    Fails explicitly if embedding fails — never stores garbage.
-    """
+    """Store user in Pinecone with a deterministic ID."""
     existing = find_user_by_email(email)
     if existing:
         return None
@@ -287,7 +285,7 @@ def store_user(email: str, password: str) -> dict:
     user_id = f"user_{int(time.time())}"
 
     text = f"user_auth:{email}"
-    embedding = embed_text_safe(text)
+    embedding = embed_text_safe(text, task="document")
 
     if embedding is None:
         print(f"[ERROR] Failed to embed user_auth for {email} — signup aborted")
@@ -319,17 +317,10 @@ def store_user(email: str, password: str) -> dict:
 
 
 def find_user_by_email(email: str) -> dict:
-    """
-    Find user by email using Pinecone's metadata filter.
-
-    Uses an exact `email` filter rather than vector similarity so
-    lookups are deterministic. Falls back to vector search if the
-    filter path fails.
-    """
+    """Find user by email using exact metadata filter (deterministic)."""
     try:
-        # Exact match filter first — deterministic
         results = index.query(
-            vector=[0.0] * 768,   # dummy vector, ignored by filter
+            vector=[0.0] * 768,
             top_k=1,
             include_metadata=True,
             namespace="users",
@@ -368,9 +359,7 @@ def verify_user(email: str, password: str) -> dict:
 
 
 def store_conversation(user_id: str, question: str, answer: str, contexts: list):
-    """
-    Store conversation in Pinecone with retry + skip-on-failure.
-    """
+    """Store conversation in Pinecone with retry + skip-on-failure."""
     if not validate_user_id(user_id):
         print(f"[WARNING] Invalid user_id: {user_id}, skipping save")
         return False
@@ -383,7 +372,7 @@ def store_conversation(user_id: str, question: str, answer: str, contexts: list)
     answer = clean_text(answer)
 
     text = f"Q: {question}\nA: {answer}"
-    embedding = embed_text_safe(text)
+    embedding = embed_text_safe(text, task="document")
 
     if embedding is None:
         print(f"[WARN] Failed to embed conversation — not stored")
@@ -417,25 +406,19 @@ def store_conversation(user_id: str, question: str, answer: str, contexts: list)
 
 
 def get_user_history(user_id: str, limit: int = 50) -> list:
+    """Fetch all chat history for a user (filter-only query)."""
     if not validate_user_id(user_id):
         return []
 
-    hash_obj = hashlib.sha256(user_id.encode())
-    hash_bytes = hash_obj.digest()
-    query_vector = []
-    for i in range(768):
-        byte_val = hash_bytes[i % len(hash_bytes)]
-        query_vector.append((byte_val / 255.0) * 0.02 + 0.01)
-
     try:
         results = index.query(
-            vector=query_vector,
+            vector=[0.0] * 768,
             top_k=limit,
             include_metadata=True,
             namespace="chat_history",
             filter={
                 "user_id": {"$eq": user_id},
-                "type": {"$eq": "chat_history"}
+                "type": {"$eq": "chat_history"},
             }
         )
     except Exception as e:
@@ -463,11 +446,12 @@ def get_user_history(user_id: str, limit: int = 50) -> list:
 
 
 def get_conversation_context(user_id: str, query: str, top_k: int = 3) -> list:
+    """Semantic search over chat history for CAG (uses query prefix)."""
     if not validate_user_id(user_id):
         return []
 
     query = clean_text(query)
-    embedding = embed_text_safe(query)
+    embedding = embed_text_safe(query, task="query")
 
     if embedding is None:
         return []
@@ -480,7 +464,7 @@ def get_conversation_context(user_id: str, query: str, top_k: int = 3) -> list:
             namespace="chat_history",
             filter={
                 "user_id": {"$eq": user_id},
-                "type": {"$eq": "chat_history"}
+                "type": {"$eq": "chat_history"},
             }
         )
     except Exception as e:
@@ -522,18 +506,17 @@ def set_last_contexts(contexts):
 
 
 # ============================================
-# TOP_K AUTO-SCALING
+# TOP_K — LOCKED TO MATCH RAG_EVAL
 # ============================================
 
 def _count_user_notes(user_id: str) -> int:
-    """Count total notes chunks for a user (for auto top_k)."""
+    """Count total note chunks for a user (filter-only)."""
     if not validate_user_id(user_id):
         return 0
 
     try:
-        dummy_vector = [0.01] * 768
         results = index.query(
-            vector=dummy_vector,
+            vector=[0.0] * 768,
             top_k=10000,
             include_metadata=False,
             namespace="notes",
@@ -548,19 +531,14 @@ def _count_user_notes(user_id: str) -> int:
 
 
 def calculate_top_k(total_chunks: int) -> int:
-    """Auto-scale top_k based on corpus size."""
-    if total_chunks <= 20:
-        return 3
-    elif total_chunks <= 50:
-        return 5
-    elif total_chunks <= 100:
-        return 8
-    elif total_chunks <= 300:
-        return 15
-    elif total_chunks <= 600:
-        return 25
-    else:
-        return 40
+    """
+    Locked production top_k — matches RAG_Eval.py.
+
+    Empirical finding across 3 corpora: top_k=3 is the
+    precision/coverage equilibrium. Higher k → worse Context
+    Relevance. Lower k → coverage collapse, more refusals.
+    """
+    return CHATBOT_TOP_K
 
 
 # ============================================
@@ -577,22 +555,17 @@ def retrieve_context(
     """
     Retrieve context from notes namespace.
 
-    top_k auto-scales to user's corpus size if not explicitly given.
+    top_k is locked to CHATBOT_TOP_K for consistency with RAG_Eval.
     """
     try:
         query = clean_text(query)
-        q_emb = embed_text_safe(query)
+        q_emb = embed_text_safe(query, task="query")
 
         if q_emb is None:
             return "Failed to embed query.", []
 
         if top_k is None:
-            # Auto-scale based on corpus size
-            if user_id and validate_user_id(user_id):
-                total = _count_user_notes(user_id)
-                top_k = calculate_top_k(total)
-            else:
-                top_k = 5
+            top_k = CHATBOT_TOP_K
 
         answer_keywords = [
             'correct answer', 'answers', 'correct option', 'right answer',

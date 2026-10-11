@@ -1,4 +1,6 @@
 # Notes_Quiz_Section.py - Notes & Quiz Module with CAG Support
+# FINAL VERSION — dynamic chunking, robust noise filter, all fixes applied
+
 import os
 import json
 import time
@@ -114,16 +116,13 @@ def validate_user_id(user_id: str) -> bool:
 # FILE EXTRACTION — lightningdoc > pymupdf4llm > basic
 # ============================================
 
-# lightningdoc (high-performance, math-aware, no PyTorch)
 try:
     from lightningdoc import extract_text_from_pdf as lightningdoc_extract
     LIGHTNINGDOC_AVAILABLE = True
 except ImportError:
     LIGHTNINGDOC_AVAILABLE = False
     print("[INFO] lightningdoc not installed. Install for best results: pip install lightningdoc")
-    print("       Note: Tesseract OCR must be installed on the system.")
 
-# pymupdf4llm (markdown-aware, fast, good quality)
 try:
     import pymupdf4llm
     PYMUPDF4LLM_AVAILABLE = True
@@ -133,42 +132,21 @@ except ImportError:
 
 
 def _normalize_math_glyphs(text: str) -> str:
-    """
-    Safety net: replace broken PDF glyphs with sensible defaults.
-    Also collapses excessive whitespace.
-    """
-    # Most common context is set-membership in this PDF
+    """Safety net: replace broken PDF glyphs, normalize punctuation, collapse whitespace."""
     text = text.replace("\uFFFD", "∈")
-
-    # Normalize typographic punctuation
     replacements = [
-        ("−", "-"),
-        ("–", "-"),
-        ("—", "--"),
-        ("’", "'"),
-        ("“", '"'),
-        ("”", '"'),
+        ("−", "-"), ("–", "-"), ("—", "--"),
+        ("’", "'"), ("“", '"'), ("”", '"'),
     ]
     for old, new in replacements:
         text = text.replace(old, new)
-
-    # Collapse excessive whitespace
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
-
     return text
 
 
 def extract_text_from_pdf(file_path):
-    """
-    Extract text from PDF.
-
-    Priority:
-      1. lightningdoc — fast, math-aware, lightweight (requires Tesseract OCR)
-      2. pymupdf4llm — markdown-aware (fast, good)
-      3. PyMuPDF basic — fallback (fast, poor on math)
-    """
-    # --- Attempt 1: lightningdoc ---
+    """Extract text from PDF: lightningdoc > pymupdf4llm > basic PyMuPDF."""
     if LIGHTNINGDOC_AVAILABLE:
         try:
             print(f"[INFO] Extracting with lightningdoc...")
@@ -179,7 +157,6 @@ def extract_text_from_pdf(file_path):
         except Exception as exc:
             print(f"[WARN] lightningdoc failed: {exc}. Falling back.")
 
-    # --- Attempt 2: pymupdf4llm ---
     if PYMUPDF4LLM_AVAILABLE:
         try:
             print("[INFO] Falling back to pymupdf4llm...")
@@ -190,7 +167,6 @@ def extract_text_from_pdf(file_path):
         except Exception as exc:
             print(f"[WARN] pymupdf4llm failed: {exc}. Falling back.")
 
-    # --- Attempt 3: PyMuPDF basic ---
     print("[INFO] Using basic PyMuPDF extraction")
     text = ""
     with fitz.open(file_path) as pdf:
@@ -211,7 +187,6 @@ def extract_text_from_txt(file_path):
 def extract_text(file_path):
     """Extract text from PDF/DOCX/TXT with math glyph normalization."""
     ext = os.path.splitext(file_path)[1].lower()
-
     if ext == ".pdf":
         raw = extract_text_from_pdf(file_path)
     elif ext == ".docx":
@@ -220,60 +195,171 @@ def extract_text(file_path):
         raw = extract_text_from_txt(file_path)
     else:
         raise ValueError(f"Unsupported file format: {ext}")
-
     return _normalize_math_glyphs(raw)
 
 
 # ============================================
-# CHUNKING — HARDENED WITH NOISE FILTER + MIN SIZE
+# CHUNKING — DYNAMIC, CORPUS-AWARE, NOISE FILTERED
 # ============================================
 
-MIN_CHUNK_CHARS = 200
+# ---- Configurable via env, no code changes needed ----
+MAX_CHUNK_CHARS = int(os.getenv("MAX_CHUNK_CHARS", "1200"))
+MIN_CHUNK_CHARS = int(os.getenv("MIN_CHUNK_CHARS", "200"))
+OVERLAP_SENTENCES = int(os.getenv("CHUNK_OVERLAP_SENTENCES", "1"))
+
+# Corpus-size thresholds for auto-tuning
+SMALL_CORPUS_THRESHOLD = int(os.getenv("SMALL_CORPUS_THRESHOLD", "50"))
+MEDIUM_CORPUS_THRESHOLD = int(os.getenv("MEDIUM_CORPUS_THRESHOLD", "200"))
+
+
+def dynamic_chunk_config(text_length: int) -> Dict[str, int]:
+    """
+    Auto-adjust chunking parameters based on total corpus size.
+
+    Small corpus (< ~50 chunks worth):
+        - Larger chunks to preserve context
+        - More overlap to avoid losing info at boundaries
+
+    Medium corpus (~50-200 chunks worth):
+        - Balanced defaults
+
+    Large corpus (> 200 chunks worth):
+        - Smaller chunks to keep each retrieval focused
+        - Less overlap to keep chunk count reasonable
+    """
+    # Estimate how many chunks we'd get at default size
+    estimated_chunks = max(1, text_length // MAX_CHUNK_CHARS)
+
+    if estimated_chunks < SMALL_CORPUS_THRESHOLD:
+        return {
+            "max_chars": max(MAX_CHUNK_CHARS, 1400),
+            "overlap_sentences": max(OVERLAP_SENTENCES, 2),
+            "min_chars": MIN_CHUNK_CHARS,
+        }
+    elif estimated_chunks < MEDIUM_CORPUS_THRESHOLD:
+        return {
+            "max_chars": MAX_CHUNK_CHARS,
+            "overlap_sentences": OVERLAP_SENTENCES,
+            "min_chars": MIN_CHUNK_CHARS,
+        }
+    else:
+        return {
+            "max_chars": min(MAX_CHUNK_CHARS, 900),
+            "overlap_sentences": max(1, OVERLAP_SENTENCES - 1),
+            "min_chars": MIN_CHUNK_CHARS,
+        }
+
+
+# ---- Noise filter (page numbers, TOC, bibliography, URL-heavy) ----
+_URL_PATTERN = re.compile(r'https?://\S+')
+_DOI_PATTERN = re.compile(r'\b(doi:|ISBN|OCLC|PMID|arXiv)\b', re.IGNORECASE)
+_RETRIEVED_PATTERN = re.compile(r'Retrieved\s+\d{4}', re.IGNORECASE)
+_ARCHIVED_PATTERN = re.compile(r'Archived\s+from', re.IGNORECASE)
 
 
 def _is_noise(text: str) -> bool:
-    """Filter page numbers, TOC lines, and bibliography entries."""
+    """Filter page numbers, TOC, bibliography, URL-heavy, and reference chunks."""
     s = text.strip()
     if not s:
         return True
+
+    # Pure page number
     if re.fullmatch(r'\d{1,4}', s):
         return True
+
+    # Bibliography-style single line: "1. Author, Title, Publisher."
     if re.match(r'^\d+\.\s+[A-Z][^.]{5,}\.', s) and len(s) < 200:
         return True
+
+    # Module headers from TOC
     if re.match(r'^Module\s*[-–]\s*[IVX]+', s):
         return True
+
+    # === NEW: URL / reference noise ===
+    urls = _URL_PATTERN.findall(s)
+    if len(urls) >= 2:
+        return True
+    if len(urls) >= 1 and len(s) < 400:
+        return True
+
+    # DOI/ISBN/OCLC citation markers
+    if _DOI_PATTERN.search(s):
+        return True
+
+    # "Retrieved 2017-09-11" / "Archived from the original" boilerplate
+    if _RETRIEVED_PATTERN.search(s) and len(s) < 500:
+        return True
+    if _ARCHIVED_PATTERN.search(s) and len(s) < 400:
+        return True
+
+    # "See also" list fragments
+    if re.match(r'^[-–]\s+(Algorithm|Moore|Timeline|List)', s) and len(s) < 200:
+        return True
+
     return False
+
+
+def _flush_chunk(
+    chunks: List[str],
+    current_chunk: str,
+    min_chars: int,
+) -> str:
+    """Flush current_chunk into chunks, merging short tails with previous."""
+    chunk = current_chunk.strip()
+    if not chunk:
+        return ""
+    if len(chunk) < min_chars and chunks:
+        chunks[-1] = chunks[-1] + " " + chunk
+    else:
+        chunks.append(chunk)
+    return ""
 
 
 def chunk_text(
     text: str,
-    max_chars: int = 800,
-    overlap_sentences: int = 1,
-    min_chars: int = MIN_CHUNK_CHARS,
+    max_chars: int = None,
+    overlap_sentences: int = None,
+    min_chars: int = None,
+    auto_dynamic: bool = True,
 ) -> List[str]:
     """
-    Paragraph-aware chunking with sentence overlap, noise filtering,
-    and minimum-size merging.
+    Paragraph-aware chunking with:
+      - Sentence-level overlap
+      - Minimum-size merging
+      - Noise filtering (page numbers, TOC, bibliography, URLs)
+      - Optional auto-dynamic parameters based on corpus size
     """
     text = text.strip()
     if not text:
         return []
+
+    # Auto-adjust based on corpus size if requested
+    if auto_dynamic:
+        config = dynamic_chunk_config(len(text))
+        max_chars = max_chars or config["max_chars"]
+        overlap_sentences = (
+            overlap_sentences if overlap_sentences is not None
+            else config["overlap_sentences"]
+        )
+        min_chars = min_chars or config["min_chars"]
+        print(
+            f"[INFO] Dynamic chunking: max_chars={max_chars}, "
+            f"overlap={overlap_sentences}, min_chars={min_chars} "
+            f"(corpus: {len(text)} chars)"
+        )
+    else:
+        max_chars = max_chars or MAX_CHUNK_CHARS
+        overlap_sentences = (
+            overlap_sentences if overlap_sentences is not None
+            else OVERLAP_SENTENCES
+        )
+        min_chars = min_chars or MIN_CHUNK_CHARS
 
     paragraphs = re.split(r'\n\s*\n', text)
 
     chunks: List[str] = []
     current_chunk = ""
     current_sentences: List[str] = []
-
-    def _flush():
-        nonlocal current_chunk, current_sentences
-        chunk = current_chunk.strip()
-        if not chunk:
-            return
-        if len(chunk) < min_chars and chunks:
-            chunks[-1] = chunks[-1] + " " + chunk
-        else:
-            chunks.append(chunk)
 
     for para in paragraphs:
         para = para.strip()
@@ -296,7 +382,7 @@ def chunk_text(
                 )
                 current_sentences.append(sentence)
             else:
-                _flush()
+                current_chunk = _flush_chunk(chunks, current_chunk, min_chars)
                 overlap = (
                     current_sentences[-overlap_sentences:]
                     if overlap_sentences > 0 and current_sentences
@@ -306,9 +392,22 @@ def chunk_text(
                 current_sentences = overlap + [sentence]
 
     if current_chunk:
-        _flush()
+        _flush_chunk(chunks, current_chunk, min_chars)
 
-    return chunks
+    # Post-filter: drop any remaining chunks that are just reference dumps
+    cleaned = []
+    for c in chunks:
+        if len(c) < min_chars:
+            continue
+        # If more than 30% of the chunk is URLs, drop it
+        url_chars = sum(len(u) for u in _URL_PATTERN.findall(c))
+        if url_chars > len(c) * 0.3:
+            continue
+        cleaned.append(c)
+
+    print(f"[INFO] Chunker produced {len(cleaned)} clean chunks "
+          f"(from {len(chunks)} pre-filter)")
+    return cleaned
 
 
 # ============================================
