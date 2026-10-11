@@ -1,5 +1,5 @@
 # Chatbot.py - Chatbot Module with CAG Support
-# FINAL VERSION — Groq JSON mode, robust filtering, structured output
+# FINAL VERSION — two-step pipeline (agent + formatter)
 
 import os
 import json
@@ -235,7 +235,6 @@ def try_parse_structured(content: str) -> Optional[StudyBuddyResponse]:
     Parse LLM response as JSON into StudyBuddyResponse.
 
     Returns None if parsing fails or required fields are missing.
-    Handles common LLM JSON quirks.
     """
     if not content or not content.strip():
         return None
@@ -918,7 +917,7 @@ def web_search(query: str) -> str:
 
 
 # ============================================
-# MAIN CHATBOT FUNCTION
+# MAIN CHATBOT FUNCTION — TWO-STEP PIPELINE
 # ============================================
 
 def get_gemini_response(
@@ -929,9 +928,9 @@ def get_gemini_response(
     """
     StudyBuddy with CAG support and structured JSON output.
 
-    Uses Groq's native JSON mode (response_format={"type": "json_object"})
-    combined with a strict JSON schema in the system prompt. This is the
-    only reliable way to force JSON output when tools are also in play.
+    Two-step pipeline because Groq rejects JSON mode + tools together:
+      Step 1: Agent with tools (JSON mode OFF) → produces prose answer
+      Step 2: Formatter LLM (JSON mode ON, no tools) → produces StudyBuddyResponse
     """
     if not validate_user_id(user_id):
         yield "⚠️ Authentication error. Invalid user ID. Please login again."
@@ -945,6 +944,7 @@ def get_gemini_response(
             and ("topic" in user_input.lower() or "studied" in user_input.lower())
         )
 
+        # ---- Retrieve CAG context ----
         relevant_contexts = []
         try:
             chat_contexts = get_conversation_context(user_id, user_input, top_k=3)
@@ -955,9 +955,9 @@ def get_gemini_response(
             print(f"[WARNING] CAG retrieval failed: {e}")
 
         # ============================================
-        # SYSTEM PROMPT — strict JSON contract
+        # STEP 1: AGENT WITH TOOLS (prose, no JSON mode)
         # ============================================
-        system_prompt = """You are StudyBuddy, a smart research assistant and tutor with memory.
+        agent_system_prompt = """You are StudyBuddy, a smart research assistant and tutor with memory.
 
 Available tools:
 - search_notes: user's personal notes
@@ -966,43 +966,17 @@ Available tools:
 - search_wikipedia: encyclopedia knowledge
 - web_search: current information
 
-═══════════════════════════════════════════════════════════
-CRITICAL: You MUST respond with ONLY a valid JSON object.
-No text before or after the JSON. No markdown code fences.
-═══════════════════════════════════════════════════════════
+Use the tools to gather information, then write a clear, direct answer
+to the user's question. Do NOT paste raw tool output — synthesize it.
 
-The JSON schema is:
-{
-  "summary": "<1-2 sentence direct answer to the question>",
-  "key_points": ["<point 1>", "<point 2>"],
-  "details": "<optional 1-2 paragraph elaboration>",
-  "sources": ["notes"],
-  "follow_up": "<optional suggested next question>"
-}
-
-RULES:
-- summary is REQUIRED and must be a string
-- key_points is a list of strings (empty list is fine for simple questions)
-- details is optional (use null if not needed)
-- sources is a list of tool names you used: "notes", "wikipedia", "web_search", "chat_history", "quizzes"
-- follow_up is optional (use null if not needed)
-- When asked for N points, return EXACTLY N items in key_points
-- NEVER paste raw tool output into any field — always synthesize
-- Respond with the JSON object ONLY. No preamble, no explanation, no code fences.
-
-Example 1 — simple factual:
-{"summary": "The transistor was invented at Bell Labs in 1947 by Shockley, Bardeen, and Brattain.", "key_points": [], "details": null, "sources": ["wikipedia"], "follow_up": null}
-
-Example 2 — multi-point:
-{"summary": "Your notes cover the history of computing.", "key_points": ["Evolution of calculation tools", "Number systems across cultures", "Notable figures like Newton, Fermi, Feynman"], "details": null, "sources": ["notes"], "follow_up": null}
-
-Example 3 — refusal:
-{"summary": "The provided context does not contain information to answer this question.", "key_points": [], "details": null, "sources": [], "follow_up": null}
+Keep your answer focused. If the user asks for N points, give N points.
+If a question can't be answered from context, say so plainly.
 """
 
         if is_topic_query:
-            system_prompt += """
-This query is asking for topics studied. Extract unique topics and put them in key_points.
+            agent_system_prompt += """
+The user wants a list of topics they've studied.
+Extract unique topics from notes and quizzes and present them as a list.
 """
 
         if relevant_contexts:
@@ -1010,20 +984,9 @@ This query is asking for topics studied. Extract unique topics and put them in k
             for i, ctx in enumerate(relevant_contexts, 1):
                 context_prompt += f"{i}. Q: {clean_text(ctx.get('question', ''))}\n"
                 context_prompt += f"   A: {clean_text(ctx.get('answer', '')[:200])}...\n"
-            system_prompt += context_prompt
+            agent_system_prompt += context_prompt
 
-        # ============================================
-        # LLM — Groq native JSON mode
-        # ============================================
-        # model_kwargs passes response_format directly to Groq,
-        # which is compatible with tool use (unlike strict schema mode).
-        llm = ChatGroq(
-            model="openai/gpt-oss-20b",
-            temperature=0.2,
-            groq_api_key=GROQ_API_KEY,
-            model_kwargs={"response_format": {"type": "json_object"}},
-        )
-
+        # ---- Tools (need user_id closure) ----
         @tool
         def search_notes(query: str) -> str:
             """Search the user's personal notes and documents for information."""
@@ -1070,14 +1033,21 @@ This query is asking for topics studied. Extract unique topics and put them in k
             web_search,
         ]
 
-        agent = create_agent(
-            model=llm,
-            tools=tools,
-            checkpointer=MemorySaver(),
-            system_prompt=system_prompt,
+        # ---- Agent WITHOUT JSON mode (tools are allowed) ----
+        agent_llm = ChatGroq(
+            model="openai/gpt-oss-20b",
+            temperature=0.2,
+            groq_api_key=GROQ_API_KEY,
         )
 
-        # Build message history
+        agent = create_agent(
+            model=agent_llm,
+            tools=tools,
+            checkpointer=MemorySaver(),
+            system_prompt=agent_system_prompt,
+        )
+
+        # ---- Build message history ----
         messages = []
         if relevant_contexts:
             for ctx in relevant_contexts[:2]:
@@ -1094,16 +1064,10 @@ This query is asking for topics studied. Extract unique topics and put them in k
         messages.append(("user", user_input))
 
         input_state = {"messages": messages}
-        config = {
-            "configurable": {
-                "thread_id": user_id or "default_thread"
-            }
-        }
+        config = {"configurable": {"thread_id": user_id or "default_thread"}}
 
-        # ============================================
-        # EXECUTE — capture only the FINAL AI message
-        # ============================================
-        final_response = ""
+        # ---- Run the agent, capture only the final AI prose ----
+        prose_answer = ""
         tool_names_used = []
 
         for chunk in agent.stream(input_state, stream_mode="values", config=config):
@@ -1114,30 +1078,74 @@ This query is asking for topics studied. Extract unique topics and put them in k
                 for tool_call in last_msg.tool_calls:
                     tool_name = tool_call.get('name', 'unknown')
                     tool_names_used.append(tool_name)
-                    tool_args = tool_call.get('args', {})
-                    print(f"   - {tool_name}: {tool_args.get('query', '')}")
+                    print(f"   - {tool_name}: {tool_call.get('args', {}).get('query', '')}")
 
-            # Only capture the final AIMessage WITHOUT pending tool calls.
-            # This filters out ToolMessage (raw dumps) and intermediate
-            # AI messages that just trigger tools.
             if (
                 isinstance(last_msg, AIMessage)
                 and last_msg.content
                 and not getattr(last_msg, 'tool_calls', None)
             ):
-                final_response = last_msg.content
+                prose_answer = last_msg.content
+
+        print(f"\n[DEBUG] Prose answer (first 200 chars): {prose_answer[:200]}")
+
+        if not prose_answer.strip():
+            yield "I couldn't generate a response. Please try rephrasing your question."
+            return
 
         # ============================================
-        # PARSE JSON
+        # STEP 2: FORMATTER LLM (JSON mode, no tools)
         # ============================================
-        print(f"\n[DEBUG] Final response (first 200 chars): {final_response[:200]}")
+        formatter_prompt = f"""You are a JSON formatter. Transform the ANSWER below into a structured JSON object.
 
-        structured = try_parse_structured(final_response)
+The JSON schema is:
+{{
+  "summary": "<1-2 sentence direct answer>",
+  "key_points": ["<point 1>", "<point 2>"],
+  "details": "<optional elaboration or null>",
+  "sources": ["<tool used>"],
+  "follow_up": "<optional next question or null>"
+}}
+
+RULES:
+- summary is REQUIRED
+- key_points is a list of strings (empty list for simple answers)
+- details is optional (null if not needed)
+- sources is a list of tool names: {tool_names_used if tool_names_used else '[]'}
+- follow_up is optional (null if not needed)
+- Preserve the original meaning. Do NOT add information.
+- Respond with ONLY the JSON object. No markdown fences. No explanation.
+
+ANSWER:
+{prose_answer}
+"""
+
+        formatter_llm = ChatGroq(
+            model="openai/gpt-oss-20b",
+            temperature=0.0,
+            groq_api_key=GROQ_API_KEY,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+
+        try:
+            formatter_response = formatter_llm.invoke(formatter_prompt)
+            json_text = formatter_response.content if hasattr(formatter_response, 'content') else str(formatter_response)
+            print(f"[DEBUG] Formatter output (first 200 chars): {json_text[:200]}")
+        except Exception as fmt_err:
+            print(f"[WARN] Formatter LLM failed: {fmt_err}")
+            # Fall back to prose
+            yield format_response(prose_answer)
+            return
+
+        # ============================================
+        # PARSE + RENDER
+        # ============================================
+        structured = try_parse_structured(json_text)
 
         if structured:
             print("[INFO] Structured output parsed successfully")
 
-            # Auto-fill sources from actual tool log if missing
+            # Auto-fill sources from actual tool log if empty
             if not structured.sources and tool_names_used:
                 structured.sources = [
                     t.replace("search_", "").replace("_wrapper", "")
@@ -1159,17 +1167,9 @@ This query is asking for topics studied. Extract unique topics and put them in k
             yield rendered
             return
 
-        # ============================================
-        # FALLBACK — if JSON parse fails, return as formatted markdown
-        # ============================================
-        print("[WARN] Could not parse structured JSON — returning formatted text")
-
-        cleaned = re.sub(r'```json\s*|```\s*', '', final_response).strip()
-
-        if cleaned:
-            yield format_response(cleaned)
-        else:
-            yield "I couldn't generate a response. Please try rephrasing your question."
+        # ---- Fallback: JSON parse failed, return prose ----
+        print("[WARN] Could not parse JSON — returning formatted prose")
+        yield format_response(prose_answer)
 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
