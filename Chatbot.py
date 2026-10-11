@@ -1,5 +1,5 @@
 # Chatbot.py - Chatbot Module with CAG Support
-# FINAL VERSION — task-aware embeddings, locked top_k, zero-vector filters
+# FINAL VERSION — structured output, task-aware embeddings, locked top_k
 
 import os
 import json
@@ -8,7 +8,7 @@ import re
 import random
 import hashlib
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Generator
+from typing import List, Dict, Any, Generator, Optional
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
@@ -30,6 +30,7 @@ import requests
 import bcrypt
 import jwt
 import streamlit as st
+from pydantic import BaseModel, Field
 
 # ---------------- TIMEZONE SUPPORT ----------------
 try:
@@ -79,6 +80,11 @@ JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")
 # --- LOCKED top_k, consistent with RAG_Eval.py ---
 CHATBOT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 
+# --- Structured output toggle (set to "false" to use streaming fallback) ---
+USE_STRUCTURED_OUTPUT = (
+    os.getenv("CHATBOT_STRUCTURED_OUTPUT", "true").lower() == "true"
+)
+
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
 if not PINECONE_API_KEY:
@@ -97,6 +103,48 @@ if INDEX_NAME not in existing_indexes:
         spec=ServerlessSpec(cloud="aws", region=PINECONE_ENVIRONMENT)
     )
 index = pc.Index(INDEX_NAME)
+
+
+# ============================================
+# STRUCTURED OUTPUT SCHEMA
+# ============================================
+
+class StudyBuddyResponse(BaseModel):
+    """Structured response format for StudyBuddy."""
+
+    summary: str = Field(
+        description="A 1-2 sentence direct answer to the user's question"
+    )
+
+    key_points: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Up to 6 bullet points with key takeaways. "
+            "Leave empty for simple yes/no questions or single-fact answers."
+        ),
+        max_length=6,
+    )
+
+    details: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional 1-2 paragraph elaboration. "
+            "Only include if the summary alone is insufficient."
+        ),
+    )
+
+    sources: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Which tools were used to answer this, "
+            "e.g. ['notes'], ['wikipedia', 'web_search'], ['chat_history']"
+        ),
+    )
+
+    follow_up: Optional[str] = Field(
+        default=None,
+        description="Optional suggested follow-up question",
+    )
 
 
 # ============================================
@@ -131,33 +179,63 @@ def clean_text(text: str) -> str:
 
 
 def format_response(text: str) -> str:
-    """Format response with proper line breaks and spacing for readability"""
+    """
+    Format response with proper line breaks.
+
+    Preserves markdown headers, numbered lists, and bullet lists.
+    Only collapses runs of 3+ newlines to 2.
+    """
     if not text:
         return text
 
-    text = clean_text(text)
+    text = text.replace('\r\n', '\n').replace('\r', '\n')
 
-    sentences = re.split(r'(?<=[.!?])\s+', text)
+    lines = text.split('\n')
+    cleaned_lines = []
+    for line in lines:
+        if re.match(r'^\s*(\d+\.|[-*•]|\*\*|#{1,6}\s)', line.strip()):
+            cleaned_lines.append(line.rstrip())
+        else:
+            cleaned_lines.append(re.sub(r'[ \t]+', ' ', line.rstrip()))
 
-    paragraphs = []
-    current_paragraph = []
+    text = '\n'.join(cleaned_lines)
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
-    for sentence in sentences:
-        if not sentence.strip():
-            continue
-        current_paragraph.append(sentence.strip())
-        if len(current_paragraph) >= 3:
-            paragraphs.append(' '.join(current_paragraph))
-            current_paragraph = []
+    return text.strip()
 
-    if current_paragraph:
-        paragraphs.append(' '.join(current_paragraph))
 
-    formatted = '\n\n'.join(paragraphs)
-    formatted = re.sub(r'(\*\s+|\-\s+)', r'\n• ', formatted)
-    formatted = re.sub(r'\n{3,}', '\n\n', formatted)
+def render_structured_response(response: StudyBuddyResponse) -> str:
+    """Render the structured response as clean markdown for Streamlit."""
+    parts = []
 
-    return formatted.strip()
+    # Summary (bold)
+    if response.summary:
+        parts.append(f"**{response.summary}**")
+
+    # Key points (numbered list)
+    if response.key_points:
+        parts.append("")
+        parts.append("**Key Points:**")
+        for i, point in enumerate(response.key_points, 1):
+            parts.append(f"{i}. {point}")
+
+    # Details
+    if response.details:
+        parts.append("")
+        parts.append("**Details:**")
+        parts.append(response.details)
+
+    # Sources
+    if response.sources:
+        parts.append("")
+        parts.append(f"*Sources: {', '.join(response.sources)}*")
+
+    # Follow-up
+    if response.follow_up:
+        parts.append("")
+        parts.append(f"_{response.follow_up}_")
+
+    return "\n".join(parts)
 
 
 # ============================================
@@ -197,20 +275,13 @@ def mark_conversation_stored(user_id: str, question: str, answer: str):
 # ============================================
 # GEMINI EMBEDDING — TASK-AWARE
 # ============================================
-# Matches Notes_Quiz_Section.py and RAG_Eval.py. Gemini Embedding 2
-# removed task_type, so we prepend task instructions.
 
 QUERY_PREFIX = "task: search result | query: "
 DOC_PREFIX = "title: none | text: "
 
 
 def embed_text(text: str, task: str = "query") -> List[float]:
-    """
-    Embed text with Gemini Embedding 2, applying the correct task prefix.
-
-    task="query"    — search queries (user questions)
-    task="document" — content being stored (chat history, notes)
-    """
+    """Embed text with Gemini Embedding 2, applying the correct task prefix."""
     if not text or not text.strip():
         raise ValueError("Cannot embed empty text")
 
@@ -531,13 +602,7 @@ def _count_user_notes(user_id: str) -> int:
 
 
 def calculate_top_k(total_chunks: int) -> int:
-    """
-    Locked production top_k — matches RAG_Eval.py.
-
-    Empirical finding across 3 corpora: top_k=3 is the
-    precision/coverage equilibrium. Higher k → worse Context
-    Relevance. Lower k → coverage collapse, more refusals.
-    """
+    """Locked production top_k — matches RAG_Eval.py."""
     return CHATBOT_TOP_K
 
 
@@ -552,11 +617,7 @@ def retrieve_context(
     search_types: list = None,
     extract_answers: bool = False
 ) -> tuple:
-    """
-    Retrieve context from notes namespace.
-
-    top_k is locked to CHATBOT_TOP_K for consistency with RAG_Eval.
-    """
+    """Retrieve context from notes namespace (top_k locked)."""
     try:
         query = clean_text(query)
         q_emb = embed_text_safe(query, task="query")
@@ -681,7 +742,7 @@ def search_chat_history_tool_func(query: str, user_id: str) -> str:
 
 
 # ============================================
-# TOOLS
+# QUIZ FORMATTING HELPERS
 # ============================================
 
 def extract_answers_from_quiz(quiz_json: dict) -> str:
@@ -752,6 +813,10 @@ def format_quiz_for_display(quiz_json: dict, show_answers: bool = True) -> str:
         return f"Error formatting quiz: {str(e)}"
 
 
+# ============================================
+# TOOLS
+# ============================================
+
 @tool
 def search_wikipedia(query: str) -> str:
     """Search Wikipedia for encyclopedia articles about a topic."""
@@ -804,8 +869,19 @@ def web_search(query: str) -> str:
 # MAIN CHATBOT FUNCTION
 # ============================================
 
-def get_gemini_response(user_input: str, history: list = None, user_id: str = None) -> Generator[str, None, None]:
-    """StudyBuddy with CAG (Cache-Augmented Generation) support."""
+def get_gemini_response(
+    user_input: str,
+    history: list = None,
+    user_id: str = None
+) -> Generator[str, None, None]:
+    """
+    StudyBuddy with CAG support and structured output.
+
+    When USE_STRUCTURED_OUTPUT=True: forces the agent to return a
+    StudyBuddyResponse object, then renders it as clean markdown.
+
+    When USE_STRUCTURED_OUTPUT=False: falls back to streaming raw text.
+    """
     if not validate_user_id(user_id):
         yield "⚠️ Authentication error. Invalid user ID. Please login again."
         return
@@ -835,9 +911,8 @@ Guidelines:
 3. Be helpful, educational, and encouraging
 4. Remember previous conversations and use them as context
 5. When asked for a list of topics, summarize them concisely
-6. Format responses with clean spacing and alignment
-7. Keep responses concise and focused on what was asked
-8. NEVER repeat the same response twice
+6. Keep responses concise and focused on what was asked
+7. NEVER repeat the same response twice
 
 Available tools:
 - search_notes: Search the user's personal notes and documents
@@ -846,24 +921,34 @@ Available tools:
 - search_wikipedia: Search Wikipedia for encyclopedia knowledge
 - web_search: Search the web for current news and real-time information
 
-IMPORTANT INSTRUCTIONS:
-- When asked "list the topics I've studied", provide a clean, bulleted summary based on notes and quizzes
-- Format topics as a numbered list or bullet points
-- DO NOT show raw quiz data or full note content
-- Extract key topics from the context and present them concisely
-- When asked "what were the correct answers", extract ONLY the answers
-- When asked "what questions were in my quiz", show the questions and options
-- Be concise and only show what was asked for"""
+CRITICAL INSTRUCTIONS FOR STRUCTURED OUTPUT:
+- Your "summary" field must directly answer the question in 1-2 sentences
+- Your "key_points" field is for multi-part answers (lists, comparisons)
+- For simple factual questions, leave "key_points" empty — just answer in summary
+- The "details" field is only for elaboration the user actually needs
+- The "sources" field must list which tools you used (e.g., ["notes"])
+- The "follow_up" field is optional — only include if genuinely useful
+
+WHEN THE USER ASKS "what is my notes about" or similar summary questions:
+- Synthesize, do NOT paste raw content
+- Extract key topics into "key_points"
+- Keep the summary short and informative
+
+WHEN THE USER ASKS "give me N points":
+- Return EXACTLY N items in "key_points"
+- Do not add extra or fewer
+
+NEVER paste raw context or footnotes into your response.
+"""
 
         if is_topic_query:
             system_prompt += """
-
 CURRENT QUERY: User is asking for a list of topics they've studied.
 - Search notes and quizzes for topics
-- Extract unique topics from the content
-- Present as a clean list with brief descriptions
+- Extract unique topics from the context
+- Present them as clean bullet points in "key_points"
 - DO NOT show the full quiz or note content
-- Only show the topics and a brief overview"""
+"""
 
         if relevant_contexts:
             context_prompt = "\n\n💬 RECENT RELEVANT CONVERSATIONS:\n"
@@ -960,13 +1045,24 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
             web_search,
         ]
 
-        agent = create_agent(
-            model=llm,
-            tools=tools,
-            checkpointer=MemorySaver(),
-            system_prompt=system_prompt,
-        )
+        # ---- Build the agent ----
+        if USE_STRUCTURED_OUTPUT:
+            agent = create_agent(
+                model=llm,
+                tools=tools,
+                checkpointer=MemorySaver(),
+                system_prompt=system_prompt,
+                response_format=StudyBuddyResponse,
+            )
+        else:
+            agent = create_agent(
+                model=llm,
+                tools=tools,
+                checkpointer=MemorySaver(),
+                system_prompt=system_prompt,
+            )
 
+        # ---- Build message history ----
         messages = []
         if relevant_contexts:
             for ctx in relevant_contexts[:2]:
@@ -983,13 +1079,68 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
         messages.append(("user", user_input))
 
         input_state = {"messages": messages}
-
         config = {
             "configurable": {
                 "thread_id": user_id or "default_thread"
             }
         }
 
+        # ============================================
+        # STRUCTURED OUTPUT PATH
+        # ============================================
+        if USE_STRUCTURED_OUTPUT:
+            try:
+                final_state = None
+                for chunk in agent.stream(
+                    input_state,
+                    stream_mode="values",
+                    config=config,
+                ):
+                    final_state = chunk
+                    last_msg = chunk["messages"][-1]
+
+                    if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                        print(f"\n🔧 Using tools:")
+                        for tool_call in last_msg.tool_calls:
+                            tool_name = tool_call.get('name', 'unknown')
+                            print(f"   - {tool_name}")
+
+                structured = None
+                if final_state:
+                    structured = final_state.get("structured_response")
+
+                if structured and isinstance(structured, StudyBuddyResponse):
+                    rendered = render_structured_response(structured)
+
+                    # Save conversation (use summary as answer)
+                    try:
+                        store_conversation(
+                            user_id=user_id,
+                            question=user_input,
+                            answer=structured.summary or rendered[:500],
+                            contexts=get_last_contexts()[:3],
+                        )
+                    except Exception as e:
+                        print(f"[WARN] Failed to store conversation: {e}")
+
+                    yield rendered
+                    return
+                else:
+                    # Structured output didn't come through — fall back
+                    print("[WARN] structured_response missing, falling back to streaming")
+                    if final_state and final_state.get("messages"):
+                        last_content = final_state["messages"][-1].content or ""
+                        yield format_response(last_content)
+                        return
+
+            except Exception as structured_error:
+                print(f"[WARN] Structured output failed: {structured_error}")
+                print("[INFO] Falling back to streaming path...")
+                # Fall through to the streaming path below
+
+        # ============================================
+        # STREAMING FALLBACK PATH
+        # ============================================
         collected_response = ""
         seen_responses = set()
 
@@ -1004,20 +1155,16 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
                         tool_args = tool_call.get('args', {})
                         print(f"   - {tool_name}: {tool_args.get('query', '')}")
 
-                        if tool_name == 'search_chat_history_wrapper':
-                            print(f"   📚 CAG: Searching chat history for context")
-                        elif tool_name == 'search_quizzes':
-                            print(f"   📝 CAG: Searching quizzes for context")
-                        elif tool_name == 'search_notes':
-                            print(f"   📄 CAG: Searching notes for context")
-
                 if hasattr(last_msg, 'content') and last_msg.content:
-                    content = clean_text(last_msg.content)
+                    content = last_msg.content
                     content_hash = hashlib.md5(content.encode()).hexdigest()
                     if content_hash not in seen_responses:
                         seen_responses.add(content_hash)
-                        collected_response += content
-                        yield content
+                        collected_response = content
+
+            # Apply formatting once at the end
+            final_response = format_response(collected_response)
+            yield final_response
 
         except Exception as stream_error:
             print(f"[WARNING] Agent streaming failed: {stream_error}")
@@ -1069,12 +1216,9 @@ Provide a helpful response using the context above.
 - Format responses with clean spacing"""
 
             response = fallback_llm.invoke(fallback_prompt)
-            collected_response = clean_text(response.content)
+            collected_response = format_response(response.content)
 
-            response_hash = hashlib.md5(collected_response.encode()).hexdigest()
-            if response_hash not in seen_responses:
-                seen_responses.add(response_hash)
-                yield collected_response
+            yield collected_response
 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
