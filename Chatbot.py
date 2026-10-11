@@ -1,5 +1,5 @@
 # Chatbot.py - Chatbot Module with CAG Support
-# FINAL VERSION — structured output with JSON parsing fallback
+# FINAL VERSION — Groq JSON mode, robust filtering, structured output
 
 import os
 import json
@@ -235,11 +235,7 @@ def try_parse_structured(content: str) -> Optional[StudyBuddyResponse]:
     Parse LLM response as JSON into StudyBuddyResponse.
 
     Returns None if parsing fails or required fields are missing.
-    Handles common LLM JSON quirks:
-      - Markdown code fences
-      - Text before/after JSON
-      - Single-quoted keys (rare)
-      - Truncated JSON (falls back to None)
+    Handles common LLM JSON quirks.
     """
     if not content or not content.strip():
         return None
@@ -258,7 +254,6 @@ def try_parse_structured(content: str) -> Optional[StudyBuddyResponse]:
     try:
         data = json.loads(json_text)
     except json.JSONDecodeError:
-        # Try a lenient cleanup pass
         try:
             json_text_clean = json_text.replace("'", '"')
             json_text_clean = re.sub(r',\s*([}\]])', r'\1', json_text_clean)
@@ -271,14 +266,12 @@ def try_parse_structured(content: str) -> Optional[StudyBuddyResponse]:
     if "summary" not in data:
         return None
 
-    # Normalize key_points
     key_points = data.get("key_points", [])
     if isinstance(key_points, str):
         key_points = [key_points]
     if not isinstance(key_points, list):
         key_points = []
 
-    # Normalize sources
     sources = data.get("sources", [])
     if isinstance(sources, str):
         sources = [sources]
@@ -934,12 +927,11 @@ def get_gemini_response(
     user_id: str = None
 ) -> Generator[str, None, None]:
     """
-    StudyBuddy with CAG support and structured output.
+    StudyBuddy with CAG support and structured JSON output.
 
-    Uses JSON prompt + parsing (since gpt-oss-20b doesn't reliably
-    support `response_format=` natively).
-
-    Streams only the FINAL AI message — never tool result dumps.
+    Uses Groq's native JSON mode (response_format={"type": "json_object"})
+    combined with a strict JSON schema in the system prompt. This is the
+    only reliable way to force JSON output when tools are also in play.
     """
     if not validate_user_id(user_id):
         yield "⚠️ Authentication error. Invalid user ID. Please login again."
@@ -963,16 +955,9 @@ def get_gemini_response(
             print(f"[WARNING] CAG retrieval failed: {e}")
 
         # ============================================
-        # SYSTEM PROMPT — forces JSON-structured output
+        # SYSTEM PROMPT — strict JSON contract
         # ============================================
-        system_prompt = """You are StudyBuddy 🤖, a smart research assistant and tutor with memory.
-
-Guidelines:
-1. Use the available tools to look up information when needed
-2. Cite sources when using tools
-3. Be helpful, educational, and encouraging
-4. Remember previous conversations
-5. Be concise and focused on what was asked
+        system_prompt = """You are StudyBuddy, a smart research assistant and tutor with memory.
 
 Available tools:
 - search_notes: user's personal notes
@@ -982,47 +967,42 @@ Available tools:
 - web_search: current information
 
 ═══════════════════════════════════════════════════════════
-CRITICAL: RESPONSE FORMAT
+CRITICAL: You MUST respond with ONLY a valid JSON object.
+No text before or after the JSON. No markdown code fences.
 ═══════════════════════════════════════════════════════════
-You MUST respond with ONLY a valid JSON object. No text before or after.
-No markdown code fences. No explanations.
 
 The JSON schema is:
 {
   "summary": "<1-2 sentence direct answer to the question>",
   "key_points": ["<point 1>", "<point 2>"],
   "details": "<optional 1-2 paragraph elaboration>",
-  "sources": ["<tool name>"],
+  "sources": ["notes"],
   "follow_up": "<optional suggested next question>"
 }
 
 RULES:
 - summary is REQUIRED and must be a string
-- key_points is a list of strings (can be empty for simple questions)
-- details is optional — only include if summary is insufficient
-- sources lists which tools you used: ["notes"], ["wikipedia"], ["web_search"], ["chat_history"]
-- follow_up is optional
-- Return EXACTLY the JSON object, nothing else
-- Do NOT wrap in markdown code fences
+- key_points is a list of strings (empty list is fine for simple questions)
+- details is optional (use null if not needed)
+- sources is a list of tool names you used: "notes", "wikipedia", "web_search", "chat_history", "quizzes"
+- follow_up is optional (use null if not needed)
+- When asked for N points, return EXACTLY N items in key_points
+- NEVER paste raw tool output into any field — always synthesize
+- Respond with the JSON object ONLY. No preamble, no explanation, no code fences.
 
-EXAMPLES:
+Example 1 — simple factual:
+{"summary": "The transistor was invented at Bell Labs in 1947 by Shockley, Bardeen, and Brattain.", "key_points": [], "details": null, "sources": ["wikipedia"], "follow_up": null}
 
-Simple factual question:
-{"summary": "The transistor was invented at Bell Labs in 1947 by Shockley, Bardeen, and Brattain.", "sources": ["wikipedia"]}
+Example 2 — multi-point:
+{"summary": "Your notes cover the history of computing.", "key_points": ["Evolution of calculation tools", "Number systems across cultures", "Notable figures like Newton, Fermi, Feynman"], "details": null, "sources": ["notes"], "follow_up": null}
 
-Multi-point question:
-{"summary": "Your notes cover the history of computing.", "key_points": ["Evolution of calculation tools", "Number systems across cultures", "Notable figures like Newton, Fermi, Feynman"], "sources": ["notes"]}
-
-When asked for N points, return EXACTLY N items in key_points.
-NEVER paste raw tool output into any field. Synthesize.
-═══════════════════════════════════════════════════════════
+Example 3 — refusal:
+{"summary": "The provided context does not contain information to answer this question.", "key_points": [], "details": null, "sources": [], "follow_up": null}
 """
 
         if is_topic_query:
             system_prompt += """
-User is asking for a list of topics they've studied.
-- Extract unique topics and put them in "key_points"
-- Keep the summary short
+This query is asking for topics studied. Extract unique topics and put them in key_points.
 """
 
         if relevant_contexts:
@@ -1032,10 +1012,16 @@ User is asking for a list of topics they've studied.
                 context_prompt += f"   A: {clean_text(ctx.get('answer', '')[:200])}...\n"
             system_prompt += context_prompt
 
+        # ============================================
+        # LLM — Groq native JSON mode
+        # ============================================
+        # model_kwargs passes response_format directly to Groq,
+        # which is compatible with tool use (unlike strict schema mode).
         llm = ChatGroq(
             model="openai/gpt-oss-20b",
             temperature=0.2,
             groq_api_key=GROQ_API_KEY,
+            model_kwargs={"response_format": {"type": "json_object"}},
         )
 
         @tool
@@ -1084,8 +1070,6 @@ User is asking for a list of topics they've studied.
             web_search,
         ]
 
-        # Build the agent WITHOUT response_format
-        # (gpt-oss-20b doesn't support it reliably on Groq)
         agent = create_agent(
             model=llm,
             tools=tools,
@@ -1117,11 +1101,7 @@ User is asking for a list of topics they've studied.
         }
 
         # ============================================
-        # EXECUTE THE AGENT
-        # ============================================
-        # We stream the state after each node so we can log tool calls,
-        # but we ONLY capture the FINAL AIMessage with content and
-        # WITHOUT pending tool calls. That's the model's synthesized answer.
+        # EXECUTE — capture only the FINAL AI message
         # ============================================
         final_response = ""
         tool_names_used = []
@@ -1129,7 +1109,6 @@ User is asking for a list of topics they've studied.
         for chunk in agent.stream(input_state, stream_mode="values", config=config):
             last_msg = chunk["messages"][-1]
 
-            # Log tool calls
             if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
                 print(f"\n🔧 Using tools:")
                 for tool_call in last_msg.tool_calls:
@@ -1138,9 +1117,9 @@ User is asking for a list of topics they've studied.
                     tool_args = tool_call.get('args', {})
                     print(f"   - {tool_name}: {tool_args.get('query', '')}")
 
-            # Capture ONLY the final AI message (no pending tool calls, has content)
-            # This excludes tool result messages (ToolMessage) and
-            # intermediate AI messages that just trigger a tool call.
+            # Only capture the final AIMessage WITHOUT pending tool calls.
+            # This filters out ToolMessage (raw dumps) and intermediate
+            # AI messages that just trigger tools.
             if (
                 isinstance(last_msg, AIMessage)
                 and last_msg.content
@@ -1149,7 +1128,7 @@ User is asking for a list of topics they've studied.
                 final_response = last_msg.content
 
         # ============================================
-        # PARSE THE FINAL RESPONSE
+        # PARSE JSON
         # ============================================
         print(f"\n[DEBUG] Final response (first 200 chars): {final_response[:200]}")
 
@@ -1158,7 +1137,7 @@ User is asking for a list of topics they've studied.
         if structured:
             print("[INFO] Structured output parsed successfully")
 
-            # Auto-fill sources if the model didn't
+            # Auto-fill sources from actual tool log if missing
             if not structured.sources and tool_names_used:
                 structured.sources = [
                     t.replace("search_", "").replace("_wrapper", "")
@@ -1181,11 +1160,10 @@ User is asking for a list of topics they've studied.
             return
 
         # ============================================
-        # FALLBACK: Not JSON — return as plain formatted text
+        # FALLBACK — if JSON parse fails, return as formatted markdown
         # ============================================
         print("[WARN] Could not parse structured JSON — returning formatted text")
 
-        # Strip any markdown code fences that might wrap the response
         cleaned = re.sub(r'```json\s*|```\s*', '', final_response).strip()
 
         if cleaned:
