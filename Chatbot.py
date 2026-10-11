@@ -1,5 +1,5 @@
 # Chatbot.py - Chatbot Module with CAG Support
-# FINAL VERSION — structured output, task-aware embeddings, locked top_k
+# FINAL VERSION — structured output with JSON parsing fallback
 
 import os
 import json
@@ -18,7 +18,9 @@ import docx2txt
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, Annotated
 import operator
-from langchain_core.messages import AnyMessage, SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AnyMessage, SystemMessage, HumanMessage, ToolMessage, AIMessage
+)
 from langchain_core.tools import tool
 from tavily import TavilyClient
 from groq import Groq
@@ -79,11 +81,6 @@ JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key")
 
 # --- LOCKED top_k, consistent with RAG_Eval.py ---
 CHATBOT_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
-
-# --- Structured output toggle (set to "false" to use streaming fallback) ---
-USE_STRUCTURED_OUTPUT = (
-    os.getenv("CHATBOT_STRUCTURED_OUTPUT", "true").lower() == "true"
-)
 
 if not GEMINI_API_KEY:
     raise ValueError("❌ GEMINI_API_KEY not found!")
@@ -208,34 +205,96 @@ def render_structured_response(response: StudyBuddyResponse) -> str:
     """Render the structured response as clean markdown for Streamlit."""
     parts = []
 
-    # Summary (bold)
     if response.summary:
         parts.append(f"**{response.summary}**")
 
-    # Key points (numbered list)
     if response.key_points:
         parts.append("")
         parts.append("**Key Points:**")
         for i, point in enumerate(response.key_points, 1):
             parts.append(f"{i}. {point}")
 
-    # Details
     if response.details:
         parts.append("")
         parts.append("**Details:**")
         parts.append(response.details)
 
-    # Sources
     if response.sources:
         parts.append("")
         parts.append(f"*Sources: {', '.join(response.sources)}*")
 
-    # Follow-up
     if response.follow_up:
         parts.append("")
         parts.append(f"_{response.follow_up}_")
 
     return "\n".join(parts)
+
+
+def try_parse_structured(content: str) -> Optional[StudyBuddyResponse]:
+    """
+    Parse LLM response as JSON into StudyBuddyResponse.
+
+    Returns None if parsing fails or required fields are missing.
+    Handles common LLM JSON quirks:
+      - Markdown code fences
+      - Text before/after JSON
+      - Single-quoted keys (rare)
+      - Truncated JSON (falls back to None)
+    """
+    if not content or not content.strip():
+        return None
+
+    # Strip markdown code fences
+    text = re.sub(r'```json\s*|```\s*', '', content).strip()
+
+    # Find the outermost JSON object
+    start = text.find('{')
+    end = text.rfind('}')
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    json_text = text[start:end + 1]
+
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        # Try a lenient cleanup pass
+        try:
+            json_text_clean = json_text.replace("'", '"')
+            json_text_clean = re.sub(r',\s*([}\]])', r'\1', json_text_clean)
+            data = json.loads(json_text_clean)
+        except Exception:
+            return None
+
+    if not isinstance(data, dict):
+        return None
+    if "summary" not in data:
+        return None
+
+    # Normalize key_points
+    key_points = data.get("key_points", [])
+    if isinstance(key_points, str):
+        key_points = [key_points]
+    if not isinstance(key_points, list):
+        key_points = []
+
+    # Normalize sources
+    sources = data.get("sources", [])
+    if isinstance(sources, str):
+        sources = [sources]
+    if not isinstance(sources, list):
+        sources = []
+
+    try:
+        return StudyBuddyResponse(
+            summary=str(data.get("summary", ""))[:500],
+            key_points=[str(p) for p in key_points[:6] if p],
+            details=str(data["details"])[:1500] if data.get("details") else None,
+            sources=[str(s) for s in sources[:5] if s],
+            follow_up=str(data["follow_up"])[:300] if data.get("follow_up") else None,
+        )
+    except Exception:
+        return None
 
 
 # ============================================
@@ -877,10 +936,10 @@ def get_gemini_response(
     """
     StudyBuddy with CAG support and structured output.
 
-    When USE_STRUCTURED_OUTPUT=True: forces the agent to return a
-    StudyBuddyResponse object, then renders it as clean markdown.
+    Uses JSON prompt + parsing (since gpt-oss-20b doesn't reliably
+    support `response_format=` natively).
 
-    When USE_STRUCTURED_OUTPUT=False: falls back to streaming raw text.
+    Streams only the FINAL AI message — never tool result dumps.
     """
     if not validate_user_id(user_id):
         yield "⚠️ Authentication error. Invalid user ID. Please login again."
@@ -903,65 +962,80 @@ def get_gemini_response(
         except Exception as e:
             print(f"[WARNING] CAG retrieval failed: {e}")
 
+        # ============================================
+        # SYSTEM PROMPT — forces JSON-structured output
+        # ============================================
         system_prompt = """You are StudyBuddy 🤖, a smart research assistant and tutor with memory.
 
 Guidelines:
 1. Use the available tools to look up information when needed
-2. Always cite your sources when using tools
+2. Cite sources when using tools
 3. Be helpful, educational, and encouraging
-4. Remember previous conversations and use them as context
-5. When asked for a list of topics, summarize them concisely
-6. Keep responses concise and focused on what was asked
-7. NEVER repeat the same response twice
+4. Remember previous conversations
+5. Be concise and focused on what was asked
 
 Available tools:
-- search_notes: Search the user's personal notes and documents
-- search_quizzes: Search the user's saved quizzes for relevant information
-- search_chat_history: Search the user's previous conversations for context
-- search_wikipedia: Search Wikipedia for encyclopedia knowledge
-- web_search: Search the web for current news and real-time information
+- search_notes: user's personal notes
+- search_quizzes: user's saved quizzes
+- search_chat_history: previous conversations
+- search_wikipedia: encyclopedia knowledge
+- web_search: current information
 
-CRITICAL INSTRUCTIONS FOR STRUCTURED OUTPUT:
-- Your "summary" field must directly answer the question in 1-2 sentences
-- Your "key_points" field is for multi-part answers (lists, comparisons)
-- For simple factual questions, leave "key_points" empty — just answer in summary
-- The "details" field is only for elaboration the user actually needs
-- The "sources" field must list which tools you used (e.g., ["notes"])
-- The "follow_up" field is optional — only include if genuinely useful
+═══════════════════════════════════════════════════════════
+CRITICAL: RESPONSE FORMAT
+═══════════════════════════════════════════════════════════
+You MUST respond with ONLY a valid JSON object. No text before or after.
+No markdown code fences. No explanations.
 
-WHEN THE USER ASKS "what is my notes about" or similar summary questions:
-- Synthesize, do NOT paste raw content
-- Extract key topics into "key_points"
-- Keep the summary short and informative
+The JSON schema is:
+{
+  "summary": "<1-2 sentence direct answer to the question>",
+  "key_points": ["<point 1>", "<point 2>"],
+  "details": "<optional 1-2 paragraph elaboration>",
+  "sources": ["<tool name>"],
+  "follow_up": "<optional suggested next question>"
+}
 
-WHEN THE USER ASKS "give me N points":
-- Return EXACTLY N items in "key_points"
-- Do not add extra or fewer
+RULES:
+- summary is REQUIRED and must be a string
+- key_points is a list of strings (can be empty for simple questions)
+- details is optional — only include if summary is insufficient
+- sources lists which tools you used: ["notes"], ["wikipedia"], ["web_search"], ["chat_history"]
+- follow_up is optional
+- Return EXACTLY the JSON object, nothing else
+- Do NOT wrap in markdown code fences
 
-NEVER paste raw context or footnotes into your response.
+EXAMPLES:
+
+Simple factual question:
+{"summary": "The transistor was invented at Bell Labs in 1947 by Shockley, Bardeen, and Brattain.", "sources": ["wikipedia"]}
+
+Multi-point question:
+{"summary": "Your notes cover the history of computing.", "key_points": ["Evolution of calculation tools", "Number systems across cultures", "Notable figures like Newton, Fermi, Feynman"], "sources": ["notes"]}
+
+When asked for N points, return EXACTLY N items in key_points.
+NEVER paste raw tool output into any field. Synthesize.
+═══════════════════════════════════════════════════════════
 """
 
         if is_topic_query:
             system_prompt += """
-CURRENT QUERY: User is asking for a list of topics they've studied.
-- Search notes and quizzes for topics
-- Extract unique topics from the context
-- Present them as clean bullet points in "key_points"
-- DO NOT show the full quiz or note content
+User is asking for a list of topics they've studied.
+- Extract unique topics and put them in "key_points"
+- Keep the summary short
 """
 
         if relevant_contexts:
-            context_prompt = "\n\n💬 RECENT RELEVANT CONVERSATIONS:\n"
+            context_prompt = "\n\nRECENT RELEVANT CONVERSATIONS:\n"
             for i, ctx in enumerate(relevant_contexts, 1):
                 context_prompt += f"{i}. Q: {clean_text(ctx.get('question', ''))}\n"
                 context_prompt += f"   A: {clean_text(ctx.get('answer', '')[:200])}...\n"
             system_prompt += context_prompt
-            system_prompt += "\n\nUse this context to provide more coherent and continuous responses."
 
         llm = ChatGroq(
             model="openai/gpt-oss-20b",
-            temperature=0.3,
-            groq_api_key=GROQ_API_KEY
+            temperature=0.2,
+            groq_api_key=GROQ_API_KEY,
         )
 
         @tool
@@ -973,24 +1047,8 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
                     query, user_id, top_k=None, search_types=["notes"]
                 )
                 set_last_contexts(contexts)
-
-                if "list" in query.lower() and ("topic" in query.lower() or "studied" in query.lower()):
-                    topics = []
-                    for ctx in contexts:
-                        if ctx.get('source') == 'notes':
-                            text = ctx.get('text', '')
-                            lines = text.split('\n')[:3]
-                            for line in lines:
-                                line = clean_text(line)
-                                if line and len(line) < 80:
-                                    topics.append(f"• {line}")
-
-                    if topics:
-                        return "📚 **Topics from your notes:**\n\n" + '\n'.join(topics[:5])
-                    return "No specific topics found in your notes."
-
                 if context_str and "No relevant" not in context_str:
-                    return f"📄 **From your notes:**\n\n{context_str}"
+                    return f"From your notes:\n\n{context_str}"
                 return "No relevant information found in your notes."
             except Exception as e:
                 return f"Error searching notes: {str(e)}"
@@ -1004,27 +1062,8 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
                     query, user_id, top_k=None, search_types=["quiz"]
                 )
                 set_last_contexts(contexts)
-
-                if "list" in query.lower() and ("topic" in query.lower() or "studied" in query.lower()):
-                    topics = []
-                    for ctx in contexts:
-                        if ctx.get('source') == 'quiz':
-                            quiz_data = ctx.get('full_data', {})
-                            if quiz_data:
-                                topic = quiz_data.get('topic', 'Unknown')
-                                difficulty = quiz_data.get('difficulty', 'medium')
-                                num_questions = len(quiz_data.get('quiz', []))
-                                topic_clean = clean_text(topic)[:60]
-                                topics.append(
-                                    f"• {topic_clean}\n  Difficulty: {difficulty.upper()}, {num_questions} questions"
-                                )
-
-                    if topics:
-                        return "📚 **Topics from your quizzes:**\n\n" + '\n\n'.join(topics[:5])
-                    return "No specific quiz topics found."
-
                 if context_str and "No relevant" not in context_str:
-                    return f"📚 **From your quizzes:**\n\n{context_str}"
+                    return f"From your quizzes:\n\n{context_str}"
                 return "No relevant quizzes found."
             except Exception as e:
                 return f"Error searching quizzes: {str(e)}"
@@ -1045,24 +1084,16 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
             web_search,
         ]
 
-        # ---- Build the agent ----
-        if USE_STRUCTURED_OUTPUT:
-            agent = create_agent(
-                model=llm,
-                tools=tools,
-                checkpointer=MemorySaver(),
-                system_prompt=system_prompt,
-                response_format=StudyBuddyResponse,
-            )
-        else:
-            agent = create_agent(
-                model=llm,
-                tools=tools,
-                checkpointer=MemorySaver(),
-                system_prompt=system_prompt,
-            )
+        # Build the agent WITHOUT response_format
+        # (gpt-oss-20b doesn't support it reliably on Groq)
+        agent = create_agent(
+            model=llm,
+            tools=tools,
+            checkpointer=MemorySaver(),
+            system_prompt=system_prompt,
+        )
 
-        # ---- Build message history ----
+        # Build message history
         messages = []
         if relevant_contexts:
             for ctx in relevant_contexts[:2]:
@@ -1086,139 +1117,81 @@ CURRENT QUERY: User is asking for a list of topics they've studied.
         }
 
         # ============================================
-        # STRUCTURED OUTPUT PATH
+        # EXECUTE THE AGENT
         # ============================================
-        if USE_STRUCTURED_OUTPUT:
+        # We stream the state after each node so we can log tool calls,
+        # but we ONLY capture the FINAL AIMessage with content and
+        # WITHOUT pending tool calls. That's the model's synthesized answer.
+        # ============================================
+        final_response = ""
+        tool_names_used = []
+
+        for chunk in agent.stream(input_state, stream_mode="values", config=config):
+            last_msg = chunk["messages"][-1]
+
+            # Log tool calls
+            if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
+                print(f"\n🔧 Using tools:")
+                for tool_call in last_msg.tool_calls:
+                    tool_name = tool_call.get('name', 'unknown')
+                    tool_names_used.append(tool_name)
+                    tool_args = tool_call.get('args', {})
+                    print(f"   - {tool_name}: {tool_args.get('query', '')}")
+
+            # Capture ONLY the final AI message (no pending tool calls, has content)
+            # This excludes tool result messages (ToolMessage) and
+            # intermediate AI messages that just trigger a tool call.
+            if (
+                isinstance(last_msg, AIMessage)
+                and last_msg.content
+                and not getattr(last_msg, 'tool_calls', None)
+            ):
+                final_response = last_msg.content
+
+        # ============================================
+        # PARSE THE FINAL RESPONSE
+        # ============================================
+        print(f"\n[DEBUG] Final response (first 200 chars): {final_response[:200]}")
+
+        structured = try_parse_structured(final_response)
+
+        if structured:
+            print("[INFO] Structured output parsed successfully")
+
+            # Auto-fill sources if the model didn't
+            if not structured.sources and tool_names_used:
+                structured.sources = [
+                    t.replace("search_", "").replace("_wrapper", "")
+                    for t in tool_names_used
+                ]
+
+            rendered = render_structured_response(structured)
+
             try:
-                final_state = None
-                for chunk in agent.stream(
-                    input_state,
-                    stream_mode="values",
-                    config=config,
-                ):
-                    final_state = chunk
-                    last_msg = chunk["messages"][-1]
+                store_conversation(
+                    user_id=user_id,
+                    question=user_input,
+                    answer=structured.summary or rendered[:500],
+                    contexts=get_last_contexts()[:3],
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to store conversation: {e}")
 
-                    if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                        print(f"\n🔧 Using tools:")
-                        for tool_call in last_msg.tool_calls:
-                            tool_name = tool_call.get('name', 'unknown')
-                            print(f"   - {tool_name}")
-
-                structured = None
-                if final_state:
-                    structured = final_state.get("structured_response")
-
-                if structured and isinstance(structured, StudyBuddyResponse):
-                    rendered = render_structured_response(structured)
-
-                    # Save conversation (use summary as answer)
-                    try:
-                        store_conversation(
-                            user_id=user_id,
-                            question=user_input,
-                            answer=structured.summary or rendered[:500],
-                            contexts=get_last_contexts()[:3],
-                        )
-                    except Exception as e:
-                        print(f"[WARN] Failed to store conversation: {e}")
-
-                    yield rendered
-                    return
-                else:
-                    # Structured output didn't come through — fall back
-                    print("[WARN] structured_response missing, falling back to streaming")
-                    if final_state and final_state.get("messages"):
-                        last_content = final_state["messages"][-1].content or ""
-                        yield format_response(last_content)
-                        return
-
-            except Exception as structured_error:
-                print(f"[WARN] Structured output failed: {structured_error}")
-                print("[INFO] Falling back to streaming path...")
-                # Fall through to the streaming path below
+            yield rendered
+            return
 
         # ============================================
-        # STREAMING FALLBACK PATH
+        # FALLBACK: Not JSON — return as plain formatted text
         # ============================================
-        collected_response = ""
-        seen_responses = set()
+        print("[WARN] Could not parse structured JSON — returning formatted text")
 
-        try:
-            for chunk in agent.stream(input_state, stream_mode="values", config=config):
-                last_msg = chunk["messages"][-1]
+        # Strip any markdown code fences that might wrap the response
+        cleaned = re.sub(r'```json\s*|```\s*', '', final_response).strip()
 
-                if hasattr(last_msg, 'tool_calls') and last_msg.tool_calls:
-                    print(f"\n🔧 Using tools:")
-                    for tool_call in last_msg.tool_calls:
-                        tool_name = tool_call.get('name', 'unknown')
-                        tool_args = tool_call.get('args', {})
-                        print(f"   - {tool_name}: {tool_args.get('query', '')}")
-
-                if hasattr(last_msg, 'content') and last_msg.content:
-                    content = last_msg.content
-                    content_hash = hashlib.md5(content.encode()).hexdigest()
-                    if content_hash not in seen_responses:
-                        seen_responses.add(content_hash)
-                        collected_response = content
-
-            # Apply formatting once at the end
-            final_response = format_response(collected_response)
-            yield final_response
-
-        except Exception as stream_error:
-            print(f"[WARNING] Agent streaming failed: {stream_error}")
-            print("[INFO] Falling back to direct response with CAG context...")
-
-            note_context_str, note_contexts = retrieve_context(
-                user_input, user_id, top_k=None, search_types=["notes"]
-            )
-            quiz_context_str, quiz_contexts = retrieve_context(
-                user_input, user_id, top_k=None, search_types=["quiz"]
-            )
-            chat_contexts = get_conversation_context(user_id, user_input, top_k=3)
-
-            combined_context = ""
-            if note_context_str and "No relevant" not in note_context_str:
-                combined_context += f"Notes: {note_context_str}\n\n"
-            if quiz_context_str and "No relevant" not in quiz_context_str:
-                combined_context += f"Quizzes: {quiz_context_str}\n\n"
-
-            chat_context_str = ""
-            if chat_contexts:
-                chat_context_str = "Previous relevant conversations:\n"
-                for i, ctx in enumerate(chat_contexts, 1):
-                    chat_context_str += f"{i}. Q: {clean_text(ctx.get('question', ''))}\n"
-                    chat_context_str += f"   A: {clean_text(ctx.get('answer', '')[:200])}...\n"
-                combined_context += chat_context_str
-
-            set_last_contexts(note_contexts + quiz_contexts + chat_contexts)
-
-            fallback_llm = ChatGroq(
-                model="openai/gpt-oss-20b",
-                temperature=0.5,
-                groq_api_key=GROQ_API_KEY
-            )
-
-            fallback_prompt = f"""You are StudyBuddy, a helpful tutor with memory.
-
-Context from notes and quizzes:
-{combined_context if combined_context else "No context available"}
-
-User question: {user_input}
-
-Provide a helpful response using the context above.
-- If the question asks for correct answers, extract ONLY the answers
-- If the question asks for questions, show the questions
-- If the question asks for the full quiz, show everything
-- DO NOT repeat the entire context unless specifically asked
-- Be concise and directly answer the question
-- Format responses with clean spacing"""
-
-            response = fallback_llm.invoke(fallback_prompt)
-            collected_response = format_response(response.content)
-
-            yield collected_response
+        if cleaned:
+            yield format_response(cleaned)
+        else:
+            yield "I couldn't generate a response. Please try rephrasing your question."
 
     except Exception as e:
         print(f"[ERROR] get_gemini_response: {e}")
