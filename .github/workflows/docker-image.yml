@@ -1,0 +1,61 @@
+name: Study Buddy CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push Study Buddy
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            abdullahrabi/study-buddy:latest
+            abdullahrabi/study-buddy:${{ github.sha }}
+          cache-from: type=registry,ref=abdullahrabi/study-buddy:buildcache
+          cache-to: type=registry,ref=abdullahrabi/study-buddy:buildcache,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy Study Buddy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            IMAGE=abdullahrabi/study-buddy:latest
+
+            echo "${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}" | docker login -u "${{ secrets.DOCKER_HUB_USERNAME }}" --password-stdin
+
+            docker pull $IMAGE
+            docker stop study-buddy-container || true
+            docker rm   study-buddy-container || true
+
+            docker run -d --name study-buddy-container --restart unless-stopped -p 8501:8501 --env-file /home/ec2-user/study-buddy/.env $IMAGE
+
+            docker image prune -f
